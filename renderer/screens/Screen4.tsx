@@ -1,6 +1,6 @@
 import React from 'react';
 import { AppState } from '../App';
-import { AutomationSummary } from './Screen3';
+import { AutomationSummary, FailedTabEntry } from './Screen3';
 
 type Props = {
   appState: AppState;
@@ -28,7 +28,7 @@ const Screen4: React.FC<Props> = ({ appState, onNewRun }) => {
     );
   }
 
-  const { totalProcessed, successCount, noPassportCount, failedCount, failedPnrs, outputPath } = summary;
+  const { totalProcessed, successCount, noPassportCount, failedCount, failedTabEntries, outputPath } = summary;
   const outputFolder = outputPath.replace(/[\\/][^\\/]+$/, '');
 
   const handleOpenFile = () => window.electronAPI.openPath(outputPath);
@@ -86,14 +86,18 @@ const Screen4: React.FC<Props> = ({ appState, onNewRun }) => {
       </div>
 
       {/* Failed tabs */}
-      {failedPnrs.length > 0 && (
+      {failedTabEntries.length > 0 && (
         <div className="card">
           <div className="summary-failed-header">
-            Failed Tabs ({failedPnrs.length})
+            Failed Tabs ({failedTabEntries.length})
           </div>
           <div className="summary-failed-list">
-            {failedPnrs.map((url, i) => (
-              <div key={i} className="summary-failed-item">{url}</div>
+            {failedTabEntries.map((entry: FailedTabEntry, i: number) => (
+              <div key={i} className="summary-failed-item">
+                <span style={{ color: '#f87171', fontWeight: 600 }}>Tab {entry.tabNum}</span>
+                {entry.pnr && <span style={{ color: '#e8e8e8' }}> — PNR: {entry.pnr}</span>}
+                <span style={{ color: '#9ca3af' }}> — {entry.reason}</span>
+              </div>
             ))}
           </div>
         </div>

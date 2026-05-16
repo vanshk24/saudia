@@ -16,13 +16,20 @@ export interface ProgressUpdate {
   currentPnr: string;
 }
 
+export interface FailedTabEntry {
+  tabNum: number;
+  pnr:    string;
+  reason: string;
+}
+
 export interface AutomationSummary {
-  totalProcessed: number;
-  successCount:   number;
-  noPassportCount:number;
-  failedCount:    number;
-  failedPnrs:     string[];
-  outputPath:     string;
+  totalProcessed:   number;
+  successCount:     number;
+  noPassportCount:  number;
+  failedCount:      number;
+  failedPnrs:       string[];
+  failedTabEntries: FailedTabEntry[];
+  outputPath:       string;
 }
 
 type LogFn      = (msg: string) => void;
@@ -42,6 +49,11 @@ export function requestStop():   void { _stopRequested  = true;  }
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function pnrFromUrl(url: string): string {
+  const m = url.match(/[?&/](?:pnr|ref|booking)[=:/]?([A-Z0-9]{6})/i);
+  return m ? m[1].toUpperCase() : '';
 }
 
 async function waitWhilePaused(log: LogFn): Promise<boolean> {
@@ -71,7 +83,7 @@ export async function runAutomation(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`❌ Failed to create output file: ${msg}`);
-    onDone({ totalProcessed: 0, successCount: 0, noPassportCount: 0, failedCount: 0, failedPnrs: [], outputPath });
+    onDone({ totalProcessed: 0, successCount: 0, noPassportCount: 0, failedCount: 0, failedPnrs: [], failedTabEntries: [], outputPath });
     return;
   }
 
@@ -83,7 +95,7 @@ export async function runAutomation(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`❌ Browser connection failed: ${msg}`);
-    onDone({ totalProcessed: 0, successCount: 0, noPassportCount: 0, failedCount: 0, failedPnrs: [], outputPath });
+    onDone({ totalProcessed: 0, successCount: 0, noPassportCount: 0, failedCount: 0, failedPnrs: [], failedTabEntries: [], outputPath });
     return;
   }
 
@@ -95,7 +107,7 @@ export async function runAutomation(
     log('');
     log('⚠️  No Saudia booking tabs found.');
     log('   Make sure Chrome has Saudia booking tabs open and click "Connect" again.');
-    onDone({ totalProcessed: 0, successCount: 0, noPassportCount: 0, failedCount: 0, failedPnrs: [], outputPath });
+    onDone({ totalProcessed: 0, successCount: 0, noPassportCount: 0, failedCount: 0, failedPnrs: [], failedTabEntries: [], outputPath });
     return;
   }
 
@@ -105,7 +117,8 @@ export async function runAutomation(
   let successCount    = 0;
   let noPassportCount = 0;
   let failedCount     = 0;
-  const failedPnrs:   string[] = [];
+  const failedPnrs:       string[]          = [];
+  const failedTabEntries: FailedTabEntry[]  = [];
 
   for (const { page: tab, url: tabUrl } of saudiaTabs) {
     if (_stopRequested) { log('🛑 Stopped by user'); break; }
@@ -129,18 +142,22 @@ export async function runAutomation(
     // Extract all passenger data from this tab
     const pauseCheck: PauseCheckFn = () => waitWhilePaused(log);
     let passengers: Awaited<ReturnType<typeof extractTabData>>;
+    let tabFailReason = '';
     try {
       passengers = await extractTabData(tab, log, pauseCheck, tabUrl);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log(`❌ Tab extraction crashed: ${msg}`);
+      tabFailReason = `Tab crashed — ${msg.slice(0, 120)}`;
       passengers = [];
     }
 
     if (passengers.length === 0) {
-      log('⚠️  No passengers extracted from this tab');
+      const reason = tabFailReason || 'No passengers extracted from page';
+      log(`⚠️  No passengers extracted from this tab`);
       failedCount++;
       failedPnrs.push(tabUrl);
+      failedTabEntries.push({ tabNum: current + 1, pnr: pnrFromUrl(tabUrl), reason });
     } else {
       // Write each passenger to Excel immediately
       for (const pax of passengers) {
@@ -168,6 +185,18 @@ export async function runAutomation(
     await delay(100); // brief pause before next tab
   }
 
+  // ── Failed tabs summary ─────────────────────────────────────────────────────
+  if (failedTabEntries.length > 0) {
+    log('');
+    log('══════════════════════════════');
+    log('FAILED TABS SUMMARY');
+    for (const e of failedTabEntries) {
+      const pnrPart = e.pnr ? `PNR: ${e.pnr}` : 'PNR: (unknown)';
+      log(`Tab ${e.tabNum} — ${pnrPart} — Reason: ${e.reason}`);
+    }
+    log('══════════════════════════════');
+  }
+
   // ── Final summary ───────────────────────────────────────────────────────────
   log(`\n══════════════════════════════════════════`);
   log(`✅ Done | Passengers written: ${totalPassengers} | No passport: ${noPassportCount} | Failed: ${failedCount}`);
@@ -179,6 +208,7 @@ export async function runAutomation(
     noPassportCount,
     failedCount,
     failedPnrs,
+    failedTabEntries,
     outputPath,
   });
 }

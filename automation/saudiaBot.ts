@@ -556,7 +556,16 @@ async function extractAllPassengers(
 
       log(`   ✅ ${fullName || name} | ticket: ${ticketNumber || 'n/a'} | PP: ${passportNumber ? '***' + passportNumber.slice(-3) : 'none'} | class: ${travelClass || 'n/a'}`);
     } catch (err) {
-      log(`   ❌ Passenger ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      let reason = errMsg;
+      if (/timeout/i.test(errMsg)) {
+        if (/dialog|modal/i.test(errMsg))        reason = 'Modal/dialog timeout — modal never appeared';
+        else if (/edit|button/i.test(errMsg))    reason = 'Edit button timeout — element not clickable or not found';
+        else if (/expand|arrow|accordion/i.test(errMsg)) reason = 'Card expand timeout — card did not open';
+        else if (/visible|attached/i.test(errMsg))       reason = 'Element not visible — page layout may have changed';
+        else                                             reason = `Timeout — ${errMsg.slice(0, 100)}`;
+      }
+      log(`   ❌ Passenger ${i + 1} skipped — Reason: ${reason}`);
       await page.keyboard.press('Escape').catch(() => {});
       await delay(100);
       await page.keyboard.press('Escape').catch(() => {});
@@ -891,7 +900,7 @@ async function extractPersonalDetails(
     }
 
     if (!editBtn) {
-      log('   No Personal Details / Missing Details button — skipping passport extraction');
+      log('   Reason: Personal details Edit button not found — passport extraction skipped');
       return { lastName, passportNumber };
     }
 
@@ -936,7 +945,7 @@ async function extractPersonalDetails(
 
     // ── Failsafe: did clicking Edit navigate to the login page? ──────────
     if (page.url().includes('socialLogin') || page.url().includes('login')) {
-      log('   ⚠️  Edit click navigated to login page — going back');
+      log('   Reason: Edit click navigated to login page (URL navigated away) — passport skipped');
       await closeAnyOpenModal(page, log);
       return { lastName, passportNumber };
     }
@@ -950,7 +959,7 @@ async function extractPersonalDetails(
       await delay(400);
     }
     if (!dialogFound) {
-      log('   ⚠️  No dialog appeared after Edit click — skipping');
+      log('   Reason: Personal details modal never opened after Edit click — passport skipped');
       return { lastName, passportNumber };
     }
 
@@ -968,7 +977,7 @@ async function extractPersonalDetails(
           .test(modalText);
 
       if (isWrongModal) {
-        log('   ⚠️  Wrong modal detected (login/sign-in) — closing and skipping passport');
+        log('   Reason: Wrong modal opened (login/sign-in instead of Edit passenger details) — passport skipped');
         for (const fn of [
           // The login modal typically has a × (cross) button in the top right
           () => modal.locator('button:has-text("close")').first().click({ timeout: 400 }),
@@ -1269,14 +1278,14 @@ async function extractEticket(
     }
 
     if (!eticketLink) {
-      log(`   ⚠️  "View E-ticket & receipts" not found for passenger ${passengerIndex + 1}`);
+      log(`   Reason: "View E-ticket & receipts" link not found for passenger ${passengerIndex + 1} — ticket skipped`);
       return { ticketNumber, travelClass };
     }
 
     // Guard: only click if visible — avoids 30 s timeout when card not expanded
     const linkVisible = await eticketLink.isVisible({ timeout: 500 }).catch(() => false);
     if (!linkVisible) {
-      log('   ⚠️  "View E-ticket & receipts" not visible — card may not be expanded yet');
+      log('   Reason: "View E-ticket & receipts" not visible — card not expanded, ticket skipped');
       return { ticketNumber, travelClass };
     }
 
@@ -1286,7 +1295,7 @@ async function extractEticket(
 
     // ── Failsafe: did clicking e-ticket navigate to login page? ──────────
     if (page.url().includes('socialLogin') || page.url().includes('login')) {
-      log('   ⚠️  E-ticket click navigated to login page — going back');
+      log('   Reason: E-ticket click navigated to login page (URL navigated away) — ticket skipped');
       await closeAnyOpenModal(page, log);
       return { ticketNumber, travelClass };
     }
@@ -1296,7 +1305,7 @@ async function extractEticket(
       const visibleModal = page.locator('[role="dialog"]:visible').last();
       const mText = await visibleModal.innerText({ timeout: 800 }).catch(() => '');
       if (/log\s*in|sign\s*in|email.*password|continue\s+with\s+google|forgot\s+password/i.test(mText)) {
-        log('   ⚠️  Login modal appeared on e-ticket click — closing and skipping e-ticket');
+        log('   Reason: Login modal appeared on e-ticket click (wrong modal opened) — ticket skipped');
         for (const fn of [
           // The login modal typically has a × (cross) button in the top right
           () => visibleModal.locator('button:has-text("close")').first().click({ timeout: 400 }),
@@ -1339,7 +1348,7 @@ async function extractEticket(
     }
 
     if (!viewEticketBtn) {
-      log('   ⚠️  "View E-ticket" button/link not found — closing outer modal');
+      log('   Reason: "View E-ticket" button not found in outer modal — ticket skipped');
       await closeTopModal(page, log);
       return { ticketNumber, travelClass };
     }

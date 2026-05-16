@@ -7,13 +7,20 @@ type Props = {
   onDone: (summary: AutomationSummary) => void;
 };
 
+export interface FailedTabEntry {
+  tabNum: number;
+  pnr:    string;
+  reason: string;
+}
+
 export interface AutomationSummary {
-  totalProcessed: number;
-  successCount: number;
-  noPassportCount: number;
-  failedCount: number;
-  failedPnrs: string[];
-  outputPath: string;
+  totalProcessed:   number;
+  successCount:     number;
+  noPassportCount:  number;
+  failedCount:      number;
+  failedPnrs:       string[];
+  failedTabEntries: FailedTabEntry[];
+  outputPath:       string;
 }
 
 type RunState = 'idle' | 'running' | 'paused' | 'done' | 'stopped';
@@ -179,9 +186,17 @@ const Screen3: React.FC<Props> = ({ appState, onDone }) => {
             </>
           )}
           {(runState === 'done' || runState === 'stopped') && (
-            <span className="run-done-label">
-              {runState === 'done' ? '✅ Complete — see summary on next screen' : '🛑 Stopped'}
-            </span>
+            <>
+              <span className="run-done-label">
+                {runState === 'done' ? '✅ Complete — see summary on next screen' : '🛑 Stopped'}
+              </span>
+              <button
+                className="btn btn-outline"
+                onClick={() => navigator.clipboard.writeText(logs.join('\n')).catch(() => {})}
+              >
+                📋 Copy Log
+              </button>
+            </>
           )}
         </div>
       </div>
