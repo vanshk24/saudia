@@ -85,14 +85,14 @@ ipcMain.handle('browser:detect', () => detectBrowsers());
 
 // ── Connect to running Chrome via CDP ─────────────────────────────────────────
 
-ipcMain.handle('browser:connect', async () => {
+ipcMain.handle('browser:connect', async (_event, port: number = 9222) => {
   try {
-    const { total, saudia } = await connectToBrowser();
+    const { total, saudia } = await connectToBrowser(port);
     return { success: true, tabCount: total, saudiaCount: saudia };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const hint = message.includes('ECONNREFUSED')
-      ? ' Make sure Chrome is running with --remote-debugging-port=9222.'
+      ? ` Make sure Chrome is running with --remote-debugging-port=${port}.`
       : '';
     return { success: false, tabCount: 0, saudiaCount: 0, error: message + hint };
   }

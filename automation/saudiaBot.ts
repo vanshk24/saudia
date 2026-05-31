@@ -156,13 +156,6 @@ async function closeAnyOpenModal(page: Page, log: LogFn): Promise<boolean> {
           }
         } catch { /* try next */ }
       }
-      // Last resort: triple Escape
-      await page.keyboard.press('Escape');
-      await delay(75);
-      await page.keyboard.press('Escape');
-      await delay(75);
-      await page.keyboard.press('Escape');
-      log('   ✓ Modal closed (Escape fallback)');
       return true;
     }
   } catch { /* no modal */ }
@@ -1218,14 +1211,6 @@ async function extractPersonalDetails(
         if (!stillVisible) { log('   Closed modal'); break; }
       } catch { /* try next */ }
     }
-    // Extra safety: if nothing worked, press Escape twice
-    const finalCheck = await dlg!.isVisible({ timeout: 200 }).catch(() => false);
-    if (finalCheck) {
-      await page.keyboard.press('Escape');
-      await delay(150);
-      await page.keyboard.press('Escape');
-      log('   Closed modal (Escape fallback)');
-    }
 
     await delay(50);
   } catch (err) {
@@ -1568,13 +1553,6 @@ async function closeTopModal(page: Page, log: LogFn): Promise<void> {
       }
     } catch { /* try next strategy */ }
   }
-  // Last resort: triple Escape
-  await page.keyboard.press('Escape');
-  await delay(75);
-  await page.keyboard.press('Escape');
-  await delay(75);
-  await page.keyboard.press('Escape');
-  log('   ⚠️  Modal close — triple Escape sent');
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────

@@ -17,8 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detectBrowsers: (): Promise<import('./browserDetect').DetectedBrowser[]> =>
     ipcRenderer.invoke('browser:detect'),
 
-  connectBrowser: (): Promise<{ success: boolean; tabCount: number; saudiaCount: number; error?: string }> =>
-    ipcRenderer.invoke('browser:connect'),
+  connectBrowser: (port: number): Promise<{ success: boolean; tabCount: number; saudiaCount: number; error?: string }> =>
+    ipcRenderer.invoke('browser:connect', port),
 
   // ── Full automation ────────────────────────────────────────────────────────
   startAutomation: (config: {

@@ -10,6 +10,9 @@ type Props = {
 const Screen4: React.FC<Props> = ({ appState, onNewRun }) => {
   const summary = appState.automationSummary;
 
+  const handleCopyLog = () =>
+    navigator.clipboard.writeText(appState.logs.join('\n')).catch(() => {});
+
   if (!summary) {
     return (
       <div className="screen">
@@ -17,11 +20,15 @@ const Screen4: React.FC<Props> = ({ appState, onNewRun }) => {
           <div className="logo">✈</div>
           <h1>Saudia Automation</h1>
           <p className="step-label">Step 4 of 4 — Summary</p>
+          <span className="port-badge">Port {appState.port}</span>
         </div>
         <div className="card">
           <div className="browser-empty">No summary available.</div>
         </div>
-        <div className="screen-footer">
+        <div className="screen-footer footer-split">
+          <button className="btn btn-outline" onClick={handleCopyLog} disabled={appState.logs.length === 0}>
+            📋 Copy Log
+          </button>
           <button className="btn btn-primary" onClick={onNewRun}>Start New Run</button>
         </div>
       </div>
@@ -40,6 +47,7 @@ const Screen4: React.FC<Props> = ({ appState, onNewRun }) => {
         <div className="logo">✅</div>
         <h1>Automation Complete</h1>
         <p className="step-label">Step 4 of 4 — Summary</p>
+        <span className="port-badge">Port {appState.port}</span>
       </div>
 
       {/* Stats */}
@@ -103,7 +111,10 @@ const Screen4: React.FC<Props> = ({ appState, onNewRun }) => {
         </div>
       )}
 
-      <div className="screen-footer">
+      <div className="screen-footer footer-split">
+        <button className="btn btn-outline" onClick={handleCopyLog} disabled={appState.logs.length === 0}>
+          📋 Copy Log
+        </button>
         <button className="btn btn-primary" onClick={onNewRun}>
           ↺ Start New Run
         </button>

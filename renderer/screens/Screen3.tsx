@@ -4,7 +4,7 @@ import { AppState } from '../App';
 type Props = {
   appState: AppState;
   setAppState: React.Dispatch<React.SetStateAction<AppState>>;
-  onDone: (summary: AutomationSummary) => void;
+  onDone: (summary: AutomationSummary, logs: string[]) => void;
 };
 
 export interface FailedTabEntry {
@@ -31,6 +31,7 @@ const Screen3: React.FC<Props> = ({ appState, onDone }) => {
   const [total, setTotal] = useState(0);
   const [currentPnr, setCurrentPnr] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
+  const logsRef = useRef<string[]>([]);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll log to bottom
@@ -39,7 +40,11 @@ const Screen3: React.FC<Props> = ({ appState, onDone }) => {
   }, [logs]);
 
   const addLog = (msg: string) =>
-    setLogs(prev => [...prev, msg]);
+    setLogs(prev => {
+      const next = [...prev, msg];
+      logsRef.current = next;
+      return next;
+    });
 
   // Subscribe to Electron events when component mounts
   useEffect(() => {
@@ -54,7 +59,7 @@ const Screen3: React.FC<Props> = ({ appState, onDone }) => {
     const unsubDone = window.electronAPI.onDone(summary => {
       setRunState('done');
       playCompletionChime();
-      onDone(summary);
+      onDone(summary, logsRef.current);
     });
 
     return () => {
@@ -68,6 +73,7 @@ const Screen3: React.FC<Props> = ({ appState, onDone }) => {
     if (!appState.excelTemplatePath || !appState.outputFolderPath) return;
 
     setLogs([]);
+    logsRef.current = [];
     setCurrent(0);
     setTotal(appState.tabCount);
     setRunState('running');
@@ -103,6 +109,7 @@ const Screen3: React.FC<Props> = ({ appState, onDone }) => {
         <div className="logo">✈</div>
         <h1>Saudia Automation</h1>
         <p className="step-label">Step 3 of 4 — Running Automation</p>
+        <span className="port-badge">Port {appState.port}</span>
       </div>
 
       {/* Progress area */}

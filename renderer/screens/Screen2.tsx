@@ -8,10 +8,17 @@ type Props = {
   onNext: () => void;
 };
 
-const PROFILE_DIR = 'C:\\chrome-automation-profile';
+const PROFILE_BASE = 'C:\\chrome-automation-profile';
+const DEFAULT_PORT = 9222;
+
+// Each port gets its own profile folder so two Chrome instances never share a process.
+// Port 9222 keeps the original folder name for backwards compatibility.
+const profileDirForPort = (port: number) =>
+  port === DEFAULT_PORT ? PROFILE_BASE : `${PROFILE_BASE}-${port}`;
 
 const Screen2: React.FC<Props> = ({ appState, setAppState, onBack, onNext }) => {
   const [chromePath, setChromePath] = useState<string>('');
+  const [port, setPort] = useState<number>(appState.port || DEFAULT_PORT);
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -27,9 +34,9 @@ const Screen2: React.FC<Props> = ({ appState, setAppState, onBack, onNext }) => 
     });
   }, []);
 
-  const chromeCommand = chromePath
-    ? `"${chromePath}" --remote-debugging-port=9222 --user-data-dir=${PROFILE_DIR}`
-    : '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222 --user-data-dir=' + PROFILE_DIR;
+  const profileDir = profileDirForPort(port);
+  const exe = chromePath || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  const chromeCommand = `"${exe}" --remote-debugging-port=${port} --user-data-dir=${profileDir}`;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(chromeCommand).then(() => {
@@ -42,19 +49,20 @@ const Screen2: React.FC<Props> = ({ appState, setAppState, onBack, onNext }) => 
     setConnecting(true);
     setConnectError(null);
 
-    const result = await window.electronAPI.connectBrowser();
+    const result = await window.electronAPI.connectBrowser(port);
 
     if (result.success) {
       setAppState(prev => ({
         ...prev,
         browserConnected: true,
         tabCount: result.tabCount,
+        port,
       }));
       if (result.tabCount === 0) {
         setConnectError(
           `Connected to Chrome but found 0 tabs. ` +
           `Make sure your Saudia booking tabs are open in the Chrome window ` +
-          `launched with --remote-debugging-port=9222 (not your regular Chrome).`
+          `launched with --remote-debugging-port=${port} (not your regular Chrome).`
         );
       }
     } else {
@@ -80,6 +88,23 @@ const Screen2: React.FC<Props> = ({ appState, setAppState, onBack, onNext }) => 
             <span className="captcha-num">1</span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <span>Open a terminal and run this command to launch Chrome:</span>
+              <div className="port-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '8px 0' }}>
+                <label htmlFor="cdp-port">Debug port:</label>
+                <input
+                  id="cdp-port"
+                  type="number"
+                  className="port-input"
+                  value={port}
+                  min={1024}
+                  max={65535}
+                  disabled={connecting}
+                  onChange={e => setPort(Number(e.target.value) || DEFAULT_PORT)}
+                  style={{ width: '90px' }}
+                />
+                <span className="port-hint" style={{ opacity: 0.7, fontSize: '0.85em' }}>
+                  Use a different port (e.g. 9223) to run a second automation in parallel.
+                </span>
+              </div>
               <div className="command-box">
                 <span className="captcha-url">{chromeCommand}</span>
                 <button className="btn btn-outline btn-copy" onClick={handleCopy}>

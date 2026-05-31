@@ -17,7 +17,7 @@ declare global {
 
       // Browser
       detectBrowsers: () => Promise<{ name: string; executablePath: string; icon: string; userDataDir: string }[]>;
-      connectBrowser: () => Promise<{ success: boolean; tabCount: number; error?: string }>;
+      connectBrowser: (port: number) => Promise<{ success: boolean; tabCount: number; error?: string }>;
 
       // Full automation
       startAutomation: (config: {

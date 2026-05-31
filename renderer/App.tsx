@@ -11,7 +11,9 @@ export type AppState = {
   outputFolderPath: string | null;
   browserConnected: boolean;
   tabCount: number;
+  port: number;
   automationSummary: AutomationSummary | null;
+  logs: string[];
   currentScreen: number;
 };
 
@@ -22,7 +24,9 @@ const App: React.FC = () => {
     outputFolderPath: null,
     browserConnected: false,
     tabCount: 0,
+    port: 9222,
     automationSummary: null,
+    logs: [],
     currentScreen: 1,
   });
 
@@ -50,8 +54,8 @@ const App: React.FC = () => {
         <Screen3
           appState={appState}
           setAppState={setAppState}
-          onDone={(summary: AutomationSummary) => {
-            setAppState(prev => ({ ...prev, automationSummary: summary }));
+          onDone={(summary: AutomationSummary, logs: string[]) => {
+            setAppState(prev => ({ ...prev, automationSummary: summary, logs }));
             goToScreen(4);
           }}
         />
@@ -67,7 +71,9 @@ const App: React.FC = () => {
               outputFolderPath: null,
               browserConnected: false,
               tabCount: 0,
+              port: 9222,
               automationSummary: null,
+              logs: [],
               currentScreen: 1,
             }));
           }}

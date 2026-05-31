@@ -16,6 +16,7 @@ export interface CdpTab {
 let _tabs:    CdpTab[]         = [];
 let _browser: Browser         | null = null;
 let _context: BrowserContext  | null = null;
+let _port:    number          = 9222;   // CDP debug port; set per-connection so multiple app instances can each target their own Chrome
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ function fetchCdpJson(path: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     // Force IPv4 — Node.js resolves 'localhost' to ::1 (IPv6) on Windows,
     // but Chrome only binds its debug port to 127.0.0.1 (IPv4).
-    const req = http.get(`http://127.0.0.1:9222${path}`, { timeout: 10_000 }, (res) => {
+    const req = http.get(`http://127.0.0.1:${_port}${path}`, { timeout: 10_000 }, (res) => {
       let data = '';
       res.on('data', (chunk: string) => (data += chunk));
       res.on('end', () => {
@@ -35,14 +36,14 @@ function fetchCdpJson(path: string): Promise<unknown> {
     req.on('timeout', () => {
       req.destroy();
       reject(new Error(
-        'Cannot reach Chrome on port 9222.\n' +
-        'Make sure Chrome was launched with --remote-debugging-port=9222.'
+        `Cannot reach Chrome on port ${_port}.\n` +
+        `Make sure Chrome was launched with --remote-debugging-port=${_port}.`
       ));
     });
     req.on('error', (err: Error) => {
       reject(new Error(
-        `Cannot reach Chrome on port 9222: ${err.message}\n` +
-        'Launch Chrome with: chrome.exe --remote-debugging-port=9222'
+        `Cannot reach Chrome on port ${_port}: ${err.message}\n` +
+        `Launch Chrome with: chrome.exe --remote-debugging-port=${_port}`
       ));
     });
   });
@@ -69,7 +70,9 @@ export function isSaudiaTabUrl(url: string): boolean {
  * Stores the tab list for display; the actual Playwright connection is
  * deferred until automation starts.
  */
-export async function connectToBrowser(): Promise<{ total: number; saudia: number }> {
+export async function connectToBrowser(port: number = 9222): Promise<{ total: number; saudia: number }> {
+  _port = port;
+
   // Drop previous Playwright connection without calling .close()
   // (.close() sends Browser.close CDP command which kills Chrome)
   _browser = null;
@@ -113,7 +116,7 @@ export interface SaudiaPage {
  */
 export async function getSaudiaPages(): Promise<SaudiaPage[]> {
   if (!_browser) {
-    _browser = await chromium.connectOverCDP('http://127.0.0.1:9222', { timeout: 90_000 });
+    _browser = await chromium.connectOverCDP(`http://127.0.0.1:${_port}`, { timeout: 90_000 });
   }
 
   const contexts = _browser.contexts();
@@ -145,6 +148,7 @@ export async function getSaudiaPages(): Promise<SaudiaPage[]> {
 
   // Match each Playwright Page to a CdpTab via CDP target ID.
   // Never call page.url() or page.evaluate() here — background tabs can hang.
+  const pageTargetId = new Map<Page, string>();
   const result: SaudiaPage[] = [];
   for (const page of allPages) {
     try {
@@ -154,6 +158,7 @@ export async function getSaudiaPages(): Promise<SaudiaPage[]> {
       const targetId = info.targetInfo.targetId;
       if (saudiaTabIds.has(targetId)) {
         const tab = tabById.get(targetId)!;
+        pageTargetId.set(page, targetId);
         result.push({ page, url: tab.url });
       }
     } catch {
@@ -162,6 +167,32 @@ export async function getSaudiaPages(): Promise<SaudiaPage[]> {
       if (isSaudiaTabUrl(u)) result.push({ page, url: u });
     }
   }
+
+  // Fetch /json/list FRESH — Chrome returns targets in current visual left-to-right
+  // order with unique `id` fields, so this is correct even when all tabs share a URL.
+  let liveOrder: string[] = _tabs.map(t => t.id);   // fallback to cached scan order
+  try {
+    const live = await fetchCdpJson('/json/list') as Array<{ id: string; type: string }>;
+    liveOrder = live.filter(t => t.type === 'page').map(t => t.id);
+  } catch (e) {
+    console.warn(`Could not refresh /json/list for tab order, using cached order: ${e}`);
+  }
+
+  console.log('=== /json/list TAB ORDER ===');
+  liveOrder.forEach((id, i) => console.log(`json[${i}]: id=${id}`));
+  console.log('=== RESULT BEFORE SORT ===');
+  result.forEach((p, i) => console.log(`result[${i}]: id=${pageTargetId.get(p.page) ?? 'unknown'} url=${p.url}`));
+
+  // Sort by the index of each page's target ID in the live /json/list order
+  // (unique IDs preserve visual order even when URLs are identical).
+  result.sort((a, b) => {
+    const aIdx = liveOrder.indexOf(pageTargetId.get(a.page) ?? '');
+    const bIdx = liveOrder.indexOf(pageTargetId.get(b.page) ?? '');
+    return aIdx - bIdx;
+  });
+
+  console.log('=== RESULT AFTER SORT ===');
+  result.forEach((p, i) => console.log(`sorted[${i}]: id=${pageTargetId.get(p.page) ?? 'unknown'} url=${p.url}`));
 
   return result;
 }
