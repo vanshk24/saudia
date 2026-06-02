@@ -190,6 +190,192 @@ export async function getPageUrl(page: Page): Promise<string> {
   catch { return ''; }
 }
 
+// ── Manage-booking form fill (runs BEFORE extraction) ─────────────────────────
+
+/**
+ * Returns the first candidate locator that is actually visible, or null.
+ * Each candidate is a thunk so we never build locators we don't need.
+ */
+async function firstVisible(
+  candidates: Array<() => Locator>,
+  what:       string,
+  log:        LogFn
+): Promise<Locator | null> {
+  for (const make of candidates) {
+    try {
+      const loc = make();
+      if (await loc.isVisible({ timeout: 800 }).catch(() => false)) return loc;
+    } catch { /* try next */ }
+  }
+  log(`   ⚠️  ${what} not found`);
+  return null;
+}
+
+/**
+ * Types text into an Angular Material (<input matInput>) field reliably.
+ *
+ * fill() sets .value directly and does NOT fire the keyboard events Angular's
+ * ControlValueAccessor listens for, so the model stays empty. Instead:
+ *   1. click to focus
+ *   2. triple-click to select existing content, then clear it
+ *   3. pressSequentially() — real per-key events (50ms) that Angular picks up
+ *   4. dispatch input + change events to force Angular's change detection
+ */
+async function typeInto(input: Locator, value: string): Promise<void> {
+  await input.click({ timeout: 2000 }).catch(() => {});
+  // Select any existing value (triple click) and delete it
+  await input.click({ clickCount: 3, timeout: 2000 }).catch(() => {});
+  await input.press('Backspace').catch(() => {});
+  // Real keystrokes so Angular Material's value accessor updates the model
+  await input.pressSequentially(value, { delay: 50 });
+  // Belt-and-suspenders: fire input + change so Angular change detection runs
+  await input.evaluate((el: HTMLInputElement) => {
+    el.dispatchEvent(new Event('input',  { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }).catch(() => {});
+}
+
+/**
+ * Diagnostic: dumps every visible input/button on the page to the log so we can
+ * see the real Angular Material selectors when a field can't be found. Safe to
+ * call only on a foreground tab (it uses evaluate()).
+ */
+async function dumpFormControls(page: Page, log: LogFn): Promise<void> {
+  try {
+    const controls = await page.evaluate(() => {
+      const pick = (el: Element) => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        return {
+          tag:    el.tagName.toLowerCase(),
+          ph:     el.getAttribute('placeholder')     || '',
+          name:   el.getAttribute('name')            || '',
+          id:     (el as HTMLElement).id             || '',
+          fcn:    el.getAttribute('formcontrolname') || '',
+          aria:   el.getAttribute('aria-label')      || '',
+          type:   el.getAttribute('type')            || '',
+          text:   (el.textContent || '').trim().slice(0, 30),
+          vis:    r.width > 0 && r.height > 0,
+        };
+      };
+      return Array.from(document.querySelectorAll('input, button')).map(pick).filter(c => c.vis);
+    });
+    log(`   🔍 ${controls.length} visible input/button control(s):`);
+    controls.forEach((c: any, i: number) =>
+      log(`     [${i}] <${c.tag}> type="${c.type}" ph="${c.ph}" name="${c.name}" id="${c.id}" fcn="${c.fcn}" aria="${c.aria}" text="${c.text}"`)
+    );
+  } catch (err) {
+    log(`   🔍 control dump failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Submits the Saudia "Manage booking" form (Booking reference + Last name) on a
+ * tab the user has left Manage-ready: fills both fields and clicks Continue.
+ *
+ * IMPORTANT: this does NOT wait for the booking page to load. It returns as soon
+ * as Continue is clicked, so the caller can fire submits across many tabs in
+ * quick succession and let them all load concurrently (Phase 1). Use
+ * waitForBookingPage() afterwards to detect when each tab finished loading.
+ *
+ * The page is already trusted (human-opened session), so typing + clicking
+ * Continue is the same navigation Saudia expects from a real user — it does not
+ * re-trigger the bot challenge.
+ *
+ * Returns true if the form was filled and Continue clicked; false if a field or
+ * the button could not be found.
+ */
+export async function submitManageBooking(
+  page:     Page,
+  pnr:      string,
+  lastName: string,
+  log:      LogFn
+): Promise<boolean> {
+  log(`📝 Submitting — PNR: ${pnr || '(blank)'} | Last name: ${lastName || '(blank)'}`);
+
+  try {
+    // ── Ensure "Booking reference" mode (not "Frequent flyer") ────────────────
+    try {
+      const refRadio = page.getByText(/^Booking reference$/i).first();
+      if (await refRadio.isVisible({ timeout: 500 }).catch(() => false)) {
+        await refRadio.click({ timeout: 800 }).catch(() => {});
+      }
+    } catch { /* non-fatal */ }
+
+    // ── Booking reference / PNR input ─────────────────────────────────────────
+    // Confirmed via inspector: the Angular Material control is formcontrolname="eticketnum".
+    const pnrInput = await firstVisible([
+      () => page.locator('input[formcontrolname="eticketnum"]').first(),
+      () => page.getByPlaceholder(/booking reference|e-?ticket/i).first(),
+      () => page.getByLabel(/booking reference|e-?ticket/i).first(),
+      () => page.locator('input[name*="recordLocator" i], input[name*="pnr" i], input[id*="pnr" i], input[id*="recordLocator" i]').first(),
+    ], 'Booking reference input', log);
+    if (!pnrInput) {
+      await dumpFormControls(page, log);   // show real selectors so we can fix the match
+      return false;
+    }
+    await typeInto(pnrInput, pnr);
+
+    // ── Last name input ───────────────────────────────────────────────────────
+    const lnInput = await firstVisible([
+      () => page.getByPlaceholder(/last name|surname/i).first(),
+      () => page.getByLabel(/last name|surname/i).first(),
+      () => page.locator('input[name*="lastName" i], input[id*="lastName" i], input[name*="lastname" i]').first(),
+      () => page.locator('input[formcontrolname*="lastName" i], input[formcontrolname*="surname" i]').first(),
+    ], 'Last name input', log);
+    if (!lnInput) {
+      await dumpFormControls(page, log);
+      return false;
+    }
+    await typeInto(lnInput, lastName);
+
+    await humanDelay();
+
+    // ── Continue button (click, do NOT wait for load) ─────────────────────────
+    const continueBtn = await firstVisible([
+      () => page.getByRole('button', { name: /^continue$/i }).first(),
+      () => page.getByRole('button', { name: /continue|retrieve|manage booking|search/i }).first(),
+      () => page.locator('button:has-text("Continue")').first(),
+      () => page.locator('button[type="submit"]').first(),
+    ], 'Continue button', log);
+    if (!continueBtn) return false;
+
+    await continueBtn.click({ timeout: 2500 });
+    return true;
+  } catch (err) {
+    log(`   ❌ Submit failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Waits (by polling the tab's URL) until it lands on a booking-details page, or
+ * the timeout expires. A tab whose flight is cancelled / needs support stays
+ * stuck on the Manage form, so it never reaches a booking URL → ok=false, and
+ * the caller swaps in a spare PNR.
+ *
+ * page.url() is updated from CDP frame events, so it reflects navigation even
+ * while the tab is in the background (no evaluate() needed).
+ */
+export async function waitForBookingPage(
+  page:      Page,
+  log:       LogFn,
+  timeoutMs: number = 35_000
+): Promise<{ ok: boolean; url: string }> {
+  const start = Date.now();
+  let url = page.url();
+  while (Date.now() - start < timeoutMs) {
+    url = page.url();
+    if (isSaudiaTab(url)) {
+      await delay(1000);   // let booking content render before extraction reads it
+      log(`   ✓ Booking page loaded: ${url}`);
+      return { ok: true, url };
+    }
+    await delay(500);
+  }
+  log(`   ⚠️  Still stuck on form after ${Math.round(timeoutMs / 1000)}s — "${url || '(empty)'}"`);
+  return { ok: false, url };
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 /** Default no-op pause check (always continue) */
@@ -790,11 +976,15 @@ async function extractFFNumber(card: Locator, log: LogFn): Promise<string> {
       return '';
     }
 
-    // Airline code prefix + digits e.g. "SV 78915244" or "SV1000470327"
-    const m = text.match(/\b((?:SV|EY|QR|EK|AA|BA|LH|TK|WY|MS)\s?\d{6,12})\b/i);
+    // Any 2-letter airline code (uppercase) + 6-12 digits, e.g.
+    // "SV 78915244", "SV1000470327", "DL 2679237202" (Delta), "AF...", "KL..." etc.
+    // Generalised so we never have to maintain an airline allow-list.
+    // The 6-12 digit floor avoids matching short flight numbers like "SV 871".
+    const m = text.match(/\b([A-Z]{2})\s?(\d{6,12})\b/);
     if (m) {
-      log(`   FF: ${m[1].trim()}`);
-      return m[1].trim();
+      const ff = `${m[1]} ${m[2]}`;
+      log(`   FF: ${ff}`);
+      return ff;
     }
 
     // Generic digits near "frequent flyer"

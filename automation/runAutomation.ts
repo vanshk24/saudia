@@ -1,5 +1,6 @@
 import { getSaudiaPages, SaudiaPage } from './browserManager';
-import { extractTabData, PauseCheckFn } from './saudiaBot';
+import { extractTabData, PauseCheckFn, submitManageBooking, waitForBookingPage } from './saudiaBot';
+import { readBookingList, BookingEntry } from './readBookingList';
 import { ExcelWriter, makeOutputPath } from './writeExcel';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -8,6 +9,7 @@ export interface AutomationConfig {
   excelTemplatePath: string;
   outputFolderPath:  string;
   fileCode:          string;
+  bookingListPath?:  string | null;   // PNR + surname input; when set, the two-phase fill flow runs
 }
 
 export interface ProgressUpdate {
@@ -111,7 +113,53 @@ export async function runAutomation(
     return;
   }
 
-  // ── Process each Saudia tab ─────────────────────────────────────────────────
+  // ── Optional: read the PNR + surname booking list ───────────────────────────
+  let bookingEntries: BookingEntry[] = [];
+  if (config.bookingListPath) {
+    try {
+      bookingEntries = await readBookingList(config.bookingListPath);
+      log(`📋 Booking list: ${bookingEntries.length} unique PNR(s) loaded`);
+    } catch (err) {
+      log(`❌ Failed to read booking list: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const useBookingFlow = bookingEntries.length > 0;
+
+  // tabEntry[i] = the booking currently assigned to tab i (updated on spare swaps)
+  const tabEntry: (BookingEntry | null)[] = [];
+  // The first `total` PNRs go into the open tabs; the rest are spares.
+  let spareIdx = total;
+
+  // ── PHASE 1 — submit a PNR into every tab (no load wait, staggered) ──────────
+  // Fire all submits in quick succession so all tabs load CONCURRENTLY.
+  if (useBookingFlow) {
+    log('');
+    log('🚀 Phase 1 — entering PNRs into all tabs (they load in parallel)…');
+    for (let i = 0; i < total; i++) {
+      if (_stopRequested) { log('🛑 Stopped by user'); break; }
+      const resumed = await waitWhilePaused(log);
+      if (!resumed) { log('🛑 Stopped by user'); break; }
+
+      const entry = bookingEntries[i] ?? null;
+      tabEntry[i] = entry;
+      if (!entry) {
+        log(`   ⏭  Tab ${i + 1}: no PNR (more tabs than PNRs) — will skip`);
+        continue;
+      }
+
+      const { page } = saudiaTabs[i];
+      try { await page.bringToFront(); await delay(100); } catch { /* non-fatal */ }
+
+      const ok = await submitManageBooking(page, entry.pnr, entry.lastName, log);
+      if (!ok) log(`   ⚠️  Tab ${i + 1}: could not submit PNR ${entry.pnr} (form fields not found)`);
+
+      onProgress({ current: 0, total, currentPnr: `Loading ${entry.pnr}…` });
+      await delay(200 + Math.random() * 300);   // small human-like stagger
+    }
+    log('⏳ Phase 2 — waiting for tabs to load, then extracting…');
+  }
+
+  // ── PHASE 2 + 3 — settle each tab (swap spares on failure) then extract ──────
   let current         = 0;
   let totalPassengers = 0;
   let successCount    = 0;
@@ -120,16 +168,18 @@ export async function runAutomation(
   const failedPnrs:       string[]          = [];
   const failedTabEntries: FailedTabEntry[]  = [];
 
-  for (const { page: tab, url: tabUrl } of saudiaTabs) {
+  for (let i = 0; i < total; i++) {
     if (_stopRequested) { log('🛑 Stopped by user'); break; }
 
     const resumed = await waitWhilePaused(log);
     if (!resumed) { log('🛑 Stopped by user'); break; }
 
-    onProgress({ current, total, currentPnr: tabUrl });
+    const { page: tab } = saudiaTabs[i];
+    let   effectiveUrl  = saudiaTabs[i].url;
+    let   entry         = tabEntry[i] ?? null;
 
     log(`\n══════════════════════════════════════════`);
-    log(`📑 Tab ${current + 1} / ${total}: ${tabUrl}`);
+    log(`📑 Tab ${i + 1} / ${total}${entry ? ` — PNR ${entry.pnr}` : ''}`);
 
     // Bring the tab to the front so the user can see what's happening
     try {
@@ -139,12 +189,57 @@ export async function runAutomation(
       log(`   ⚠️  bringToFront failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // In the booking flow: wait for the page submitted in Phase 1, swapping in a
+    // spare PNR if this tab is stuck on the form (cancelled flight / needs support).
+    if (useBookingFlow) {
+      if (!entry) {
+        failedCount++;
+        failedTabEntries.push({ tabNum: i + 1, pnr: '', reason: 'No PNR assigned (more tabs than PNRs)' });
+        current++;
+        onProgress({ current, total, currentPnr: '' });
+        continue;
+      }
+
+      let settled = await waitForBookingPage(tab, log);
+
+      while (!settled.ok && spareIdx < bookingEntries.length) {
+        if (_stopRequested) break;
+        const spare = bookingEntries[spareIdx++];
+        log(`   🔄 Tab ${i + 1}: PNR ${entry!.pnr} did not load — swapping spare PNR ${spare.pnr}`);
+        entry = spare;
+        tabEntry[i] = spare;
+        try { await tab.bringToFront(); await delay(100); } catch { /* non-fatal */ }
+        const ok = await submitManageBooking(tab, spare.pnr, spare.lastName, log);
+        if (!ok) continue;
+        settled = await waitForBookingPage(tab, log);
+      }
+
+      if (!settled.ok) {
+        const pnr = entry?.pnr ?? '';
+        log(`   ❌ Tab ${i + 1}: no booking loaded (cancelled/support, no spares left)`);
+        failedCount++;
+        if (pnr) failedPnrs.push(pnr);
+        failedTabEntries.push({
+          tabNum: i + 1,
+          pnr,
+          reason: 'Booking did not load (cancelled / needs support) and no spare PNRs left',
+        });
+        current++;
+        onProgress({ current, total, currentPnr: '' });
+        continue;
+      }
+
+      effectiveUrl = settled.url;
+    }
+
+    onProgress({ current, total, currentPnr: entry?.pnr ?? effectiveUrl });
+
     // Extract all passenger data from this tab
     const pauseCheck: PauseCheckFn = () => waitWhilePaused(log);
     let passengers: Awaited<ReturnType<typeof extractTabData>>;
     let tabFailReason = '';
     try {
-      passengers = await extractTabData(tab, log, pauseCheck, tabUrl);
+      passengers = await extractTabData(tab, log, pauseCheck, effectiveUrl);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log(`❌ Tab extraction crashed: ${msg}`);
@@ -156,8 +251,8 @@ export async function runAutomation(
       const reason = tabFailReason || 'No passengers extracted from page';
       log(`⚠️  No passengers extracted from this tab`);
       failedCount++;
-      failedPnrs.push(tabUrl);
-      failedTabEntries.push({ tabNum: current + 1, pnr: pnrFromUrl(tabUrl), reason });
+      failedPnrs.push(entry?.pnr ?? effectiveUrl);
+      failedTabEntries.push({ tabNum: i + 1, pnr: entry?.pnr ?? pnrFromUrl(effectiveUrl), reason });
     } else {
       // Write each passenger to Excel immediately
       for (const pax of passengers) {

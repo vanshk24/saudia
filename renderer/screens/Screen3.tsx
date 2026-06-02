@@ -82,6 +82,7 @@ const Screen3: React.FC<Props> = ({ appState, onDone }) => {
       excelTemplatePath: appState.excelTemplatePath,
       outputFolderPath: appState.outputFolderPath,
       fileCode: appState.fileCode,
+      bookingListPath: appState.bookingListPath,
     });
   };
 

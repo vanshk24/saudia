@@ -49,15 +49,17 @@ function fetchCdpJson(path: string): Promise<unknown> {
   });
 }
 
+/**
+ * Tab discovery filter (used to count/select tabs on connect).
+ *
+ * Matches ANY saudia.com tab — including the homepage "Manage booking" form
+ * that the user leaves Manage-ready before automation fills the PNR + last name
+ * and clicks Continue. (The extractor in saudiaBot.ts uses a stricter check
+ * that only accepts actual booking-detail URLs, which is what the tab becomes
+ * AFTER Continue.)
+ */
 export function isSaudiaTabUrl(url: string): boolean {
-  const lower = url.toLowerCase();
-  return lower.includes('saudia.com') && (
-    lower.includes('managemybooking')   ||
-    lower.includes('manage-my-booking') ||
-    lower.includes('manage-booking')    ||
-    lower.includes('booking-details')   ||
-    lower.includes('trip-details')
-  );
+  return url.toLowerCase().includes('saudia.com');
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

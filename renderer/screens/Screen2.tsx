@@ -114,12 +114,15 @@ const Screen2: React.FC<Props> = ({ appState, setAppState, onBack, onNext }) => 
             </div>
           </div>
 
-          {/* Step 2 — Open booking tabs */}
+          {/* Step 2 — Open Manage-ready tabs */}
           <div className="captcha-step">
             <span className="captcha-num">2</span>
             <span>
-              In that Chrome window, open each PNR booking page on the Saudia website.
-              Make sure all booking-detail pages are fully loaded.
+              In that Chrome window, open one Saudia <strong>“Manage booking”</strong> tab
+              for each PNR you want done (saudia.com → <em>Manage</em>). Leave each tab on
+              the Manage form — the automation fills the PNR + last name and clicks
+              Continue for you. Open as many tabs as PNRs you want processed; the first
+              that many PNRs from your booking list are used.
             </span>
           </div>
 

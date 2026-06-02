@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFolder: (): Promise<string | null> =>
     ipcRenderer.invoke('dialog:openFolder'),
 
+  // ── Booking list (PNR + surname input file) ──────────────────────────────────
+  parseBookingList: (filePath: string): Promise<import('../automation/readBookingList').BookingEntry[]> =>
+    ipcRenderer.invoke('bookinglist:parse', filePath),
+
   // ── Word parsing ───────────────────────────────────────────────────────────
   parseWordFile: (filePath: string): Promise<import('../automation/groupPassengers').ParseResult> =>
     ipcRenderer.invoke('word:parse', filePath),
@@ -25,6 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     excelTemplatePath: string;
     outputFolderPath: string;
     fileCode: string;
+    bookingListPath?: string | null;
   }): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('automation:start', config),
 

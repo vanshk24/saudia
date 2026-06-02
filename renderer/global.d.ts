@@ -15,6 +15,9 @@ declare global {
       openFile: (filters: { name: string; extensions: string[] }[]) => Promise<string | null>;
       openFolder: () => Promise<string | null>;
 
+      // Booking list (PNR + surname input file)
+      parseBookingList: (filePath: string) => Promise<{ pnr: string; lastName: string }[]>;
+
       // Browser
       detectBrowsers: () => Promise<{ name: string; executablePath: string; icon: string; userDataDir: string }[]>;
       connectBrowser: (port: number) => Promise<{ success: boolean; tabCount: number; error?: string }>;
@@ -24,6 +27,7 @@ declare global {
         excelTemplatePath: string;
         outputFolderPath: string;
         fileCode: string;
+        bookingListPath?: string | null;
       }) => Promise<{ success: boolean }>;
       pauseAutomation:  () => void;
       resumeAutomation: () => void;

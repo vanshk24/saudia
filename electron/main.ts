@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'path';
 import { readWordFile } from '../automation/readWord';
 import { groupPassengers } from '../automation/groupPassengers';
+import { readBookingList } from '../automation/readBookingList';
 import { detectBrowsers } from './browserDetect';
 import { connectToBrowser } from '../automation/browserManager';
 import {
@@ -79,6 +80,12 @@ ipcMain.handle('word:parse', async (_event, filePath: string) => {
   return groupPassengers(passengers);
 });
 
+// ── Booking list parsing (PNR + surname, deduped) ─────────────────────────────
+
+ipcMain.handle('bookinglist:parse', async (_event, filePath: string) => {
+  return readBookingList(filePath);
+});
+
 // ── Browser detection ─────────────────────────────────────────────────────────
 
 ipcMain.handle('browser:detect', () => detectBrowsers());
@@ -106,6 +113,7 @@ ipcMain.handle(
     excelTemplatePath: string;
     outputFolderPath: string;
     fileCode: string;
+    bookingListPath?: string | null;
   }) => {
     const send = (channel: string, data?: unknown) => {
       if (!event.sender.isDestroyed()) event.sender.send(channel, data);

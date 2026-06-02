@@ -9,6 +9,8 @@ export type AppState = {
   fileCode: string;
   excelTemplatePath: string | null;
   outputFolderPath: string | null;
+  bookingListPath: string | null;
+  bookingCount: number;
   browserConnected: boolean;
   tabCount: number;
   port: number;
@@ -22,6 +24,8 @@ const App: React.FC = () => {
     fileCode: '',
     excelTemplatePath: null,
     outputFolderPath: null,
+    bookingListPath: null,
+    bookingCount: 0,
     browserConnected: false,
     tabCount: 0,
     port: 9222,
@@ -69,6 +73,8 @@ const App: React.FC = () => {
               fileCode: '',
               excelTemplatePath: null,
               outputFolderPath: null,
+              bookingListPath: null,
+              bookingCount: 0,
               browserConnected: false,
               tabCount: 0,
               port: 9222,

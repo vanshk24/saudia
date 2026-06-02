@@ -24,6 +24,20 @@ const Screen1: React.FC<Props> = ({ appState, setAppState, onNext }) => {
     }
   };
 
+  const handleSelectBookingList = async () => {
+    const filePath = await window.electronAPI.openFile([
+      { name: 'Booking List', extensions: ['xlsx', 'csv'] },
+    ]);
+    if (!filePath) return;
+    setAppState(prev => ({ ...prev, bookingListPath: filePath, bookingCount: 0 }));
+    try {
+      const entries = await window.electronAPI.parseBookingList(filePath);
+      setAppState(prev => ({ ...prev, bookingCount: entries.length }));
+    } catch {
+      setAppState(prev => ({ ...prev, bookingCount: -1 })); // -1 = parse error
+    }
+  };
+
   const canProceed =
     appState.fileCode.trim().length > 0 &&
     appState.excelTemplatePath !== null &&
@@ -78,6 +92,37 @@ const Screen1: React.FC<Props> = ({ appState, setAppState, onNext }) => {
           </div>
           <button className="btn btn-outline" onClick={handleSelectExcelTemplate}>
             Select .xlsx
+          </button>
+        </div>
+
+        <div className="divider" />
+
+        {/* Booking list row (PNR + surname input) */}
+        <div className="file-row">
+          <div className="file-info">
+            <span className="file-label">Booking List (PNR + Last Name)</span>
+            <span className={`file-path ${appState.bookingListPath ? 'path-selected' : 'path-empty'}`}>
+              {appState.bookingListPath ? basename(appState.bookingListPath) : 'No file selected'}
+            </span>
+            {appState.bookingListPath && (
+              <span className="file-full-path" title={appState.bookingListPath}>
+                {appState.bookingListPath}
+              </span>
+            )}
+            {appState.bookingListPath && appState.bookingCount > 0 && (
+              <span className="file-path path-selected" style={{ color: '#2e9e5b' }}>
+                ✓ {appState.bookingCount} unique PNR{appState.bookingCount !== 1 ? 's' : ''} found —
+                open up to {appState.bookingCount} tabs (first N processed)
+              </span>
+            )}
+            {appState.bookingListPath && appState.bookingCount === -1 && (
+              <span className="file-path path-empty" style={{ color: '#d9534f' }}>
+                ⚠️ Could not read this file — check it has a PNR + Name column
+              </span>
+            )}
+          </div>
+          <button className="btn btn-outline" onClick={handleSelectBookingList}>
+            Select .xlsx / .csv
           </button>
         </div>
 
