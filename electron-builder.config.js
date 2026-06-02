@@ -12,9 +12,11 @@ module.exports = {
     'dist/**/*',
     'package.json',
     'node_modules/**/*',
-    // Exclude playwright browser downloads — we use the user's Chrome via CDP
+    // Exclude playwright browser downloads — we use the user's Chrome via CDP.
+    // NOTE: do NOT exclude lib/server/registry/** — server/index.js does
+    // require('./registry') and needs that source. Only the actual browser
+    // binaries live in .local-browsers, so excluding that alone is enough.
     '!node_modules/playwright-core/.local-browsers/**',
-    '!node_modules/playwright-core/lib/server/registry/**',
     '!**/*.map',
   ],
 
