@@ -1,6 +1,6 @@
 {
   "name": "saudia-automation",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Saudia Airlines booking automation tool",
   "main": "dist/electron/main.js",
   "scripts": {
@@ -9,7 +9,7 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:renderer && npm run build:electron",
     "start": "npm run build && electron .",
-    "pack": "npm run build && electron-builder --win"
+    "pack": "npm run build && electron-builder --win --config electron-builder.config.js"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
