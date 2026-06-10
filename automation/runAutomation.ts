@@ -239,7 +239,7 @@ export async function runAutomation(
     let passengers: Awaited<ReturnType<typeof extractTabData>>;
     let tabFailReason = '';
     try {
-      passengers = await extractTabData(tab, log, pauseCheck, effectiveUrl);
+      passengers = await extractTabData(tab, log, pauseCheck, effectiveUrl, entry?.pnr);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log(`❌ Tab extraction crashed: ${msg}`);

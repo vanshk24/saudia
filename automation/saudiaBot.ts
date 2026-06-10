@@ -75,6 +75,8 @@ const NOT_AIRPORT = new Set([
   'NGN','LKR','NPR','PHP','IDR','THB','VND','KRW','JPY','CNY','HKD',
   // UI text fragments that are 3 uppercase letters
   'ADD','GET','ALL','NEW','VIA','TAX','FEE','PER','DAY','NOW',
+  // Fare / cabin / badge labels seen in the Flight details modal
+  'VIP','BAG','KGS','PNR','ETA','ETD','GMT','UTC',
 ]);
 
 function extractAirports(text: string): string[] {
@@ -174,6 +176,21 @@ export function isSaudiaTab(url: string): boolean {
   );
 }
 
+/**
+ * True when the URL looks like the saudia.com homepage / landing page rather
+ * than an already-open Manage-booking form. On the homepage the Booking
+ * reference + Last name fields are hidden behind the "Manage" navigation tab.
+ */
+export function isSaudiaHomepage(url: string): boolean {
+  const lower = url.toLowerCase();
+  if (!lower.includes('saudia.com')) return false;
+  if (isSaudiaTab(url)) return false;          // already on a booking/manage page
+  // Root or top-level marketing paths (e.g. saudia.com/, /en, /en-sa, /home)
+  const path = lower.replace(/^https?:\/\/[^/]+/, '');   // strip scheme + host
+  return path === '' || path === '/' ||
+    /^\/(en|ar|home|index)?(\/(en|ar|home|index))?\/?($|[?#])/.test(path);
+}
+
 /** Convenience overload that accepts a Page object */
 export function isSaudiaBookingPage(page: Page): boolean {
   return isSaudiaTab(page.url());
@@ -269,6 +286,56 @@ async function dumpFormControls(page: Page, log: LogFn): Promise<void> {
 }
 
 /**
+ * If the tab is sitting on the saudia.com homepage (rather than an already-open
+ * Manage-booking form), click the "Manage" navigation tab to reveal the
+ * Booking reference + Last name form, then wait for that form to appear.
+ *
+ * Detection: we treat the page as "needs Manage clicked" when the PNR input is
+ * not already visible AND the URL looks like a homepage/landing page. This keeps
+ * tabs the user already left on the Manage form untouched.
+ *
+ * Returns true once the form is ready (or was already ready); false if the
+ * Manage tab could not be found/clicked.
+ */
+async function ensureManageFormOpen(page: Page, log: LogFn): Promise<boolean> {
+  // Already on the form? The Booking reference input being visible is the most
+  // reliable signal — short-circuit so we never click Manage needlessly.
+  const formInput = page.locator('input[formcontrolname="eticketnum"]').first();
+  if (await formInput.isVisible({ timeout: 600 }).catch(() => false)) return true;
+
+  // Not on the form. Only intervene if the URL really is the homepage.
+  const url = await getPageUrl(page);
+  if (!isSaudiaHomepage(url)) return true;   // some other state — leave it to the caller
+
+  log('   🏠 On saudia.com homepage — clicking "Manage" tab to open the form…');
+
+  const manageTab = await firstVisible([
+    // Confirmed via inspection: the Manage tab is the second Angular Material tab.
+    () => page.locator('#mat-tab-label-0-1').first(),
+    // Any Angular-generated Manage tab ID (the "-1" index is the Manage tab).
+    () => page.locator("[id^='mat-tab-label'][id$='-1']").first(),
+    // Role-based fallback.
+    () => page.getByRole('tab', { name: 'Manage' }).first(),
+  ], 'Manage navigation tab', log);
+  if (!manageTab) {
+    await dumpFormControls(page, log);
+    return false;
+  }
+
+  await manageTab.click({ timeout: 2500 }).catch(() => {});
+
+  // Wait for the Manage form to render (Booking reference input appears).
+  try {
+    await formInput.waitFor({ state: 'visible', timeout: 8000 });
+    log('   ✓ Manage form opened');
+    return true;
+  } catch {
+    log('   ⚠️  Manage form did not appear after clicking "Manage"');
+    return false;
+  }
+}
+
+/**
  * Submits the Saudia "Manage booking" form (Booking reference + Last name) on a
  * tab the user has left Manage-ready: fills both fields and clicks Continue.
  *
@@ -293,6 +360,12 @@ export async function submitManageBooking(
   log(`📝 Submitting — PNR: ${pnr || '(blank)'} | Last name: ${lastName || '(blank)'}`);
 
   try {
+    // ── If on the homepage, click "Manage" to reveal the form first ───────────
+    if (!await ensureManageFormOpen(page, log)) {
+      log('   ⚠️  Could not open the Manage form — aborting submit for this tab');
+      return false;
+    }
+
     // ── Ensure "Booking reference" mode (not "Frequent flyer") ────────────────
     try {
       const refRadio = page.getByText(/^Booking reference$/i).first();
@@ -385,7 +458,8 @@ export async function extractTabData(
   page: Page,
   log: LogFn,
   pauseCheck: PauseCheckFn = NO_PAUSE,
-  knownUrl?: string          // URL from HTTP scan — avoids evaluate() before bringToFront
+  knownUrl?: string,         // URL from HTTP scan — avoids evaluate() before bringToFront
+  knownPnr?: string          // PNR typed into the Manage form — reliable fallback
 ): Promise<PassengerData[]> {
   // Use the known URL from HTTP scan if provided (always correct).
   // Only fall back to page.url() / evaluate() if no knownUrl was supplied.
@@ -406,12 +480,17 @@ export async function extractTabData(
     await delay(50);
 
     // ── PNR ──────────────────────────────────────────────────────────────────
-    const pnr = await extractPnr(page, log);
+    const pnr = await extractPnr(page, log, knownPnr);
     log(`🔑 PNR: ${pnr || '(not found)'}`);
 
     // ── Flights ───────────────────────────────────────────────────────────────
     const flights = await extractFlights(page, log);
     log(`✈  Legs found: ${flights.length}`);
+
+    // Fallback: for any leg still missing from/to, open that leg's "Flight
+    // details" modal and read the airport codes from it (per-leg, independent).
+    await fillMissingFromToFromModal(page, flights, log);
+
     flights.forEach((f, i) => log(`   Leg ${i + 1}: ${f.date}  ${f.from} → ${f.to}`));
 
     // ── Passengers ────────────────────────────────────────────────────────────
@@ -427,28 +506,60 @@ export async function extractTabData(
 
 // ── PNR extraction ────────────────────────────────────────────────────────────
 
-async function extractPnr(page: Page, log: LogFn): Promise<string> {
-  // Strategy 1: "Booking reference\n8UDBSN" pattern in body text
+/** A Saudia PNR / booking reference: 6 chars, at least one letter (rules out times/numbers) */
+const PNR_RE = /\b(?=[A-Z0-9]{6}\b)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6}\b/;
+
+/** A booking reference is 6 alphanumeric with at least one letter (e.g. 8UDBSN) */
+function looksLikePnr(s: string): boolean {
+  return /^[A-Z0-9]{6}$/.test(s) && /[A-Z]/.test(s);
+}
+
+async function extractPnr(page: Page, log: LogFn, knownPnr?: string): Promise<string> {
+  // Strategy 1: "Booking reference … 8UDBSN" pattern in body text.
+  // Whitespace between the label and value is flexible (newlines, colons, spaces),
+  // and the value must contain a letter so we never grab a time like "121005".
   try {
     const body = await page.locator('body').innerText({ timeout: 2000 });
-    const m = body.match(/Booking\s+reference\s*\n?\s*([A-Z0-9]{6})\b/i);
-    if (m) return m[1].toUpperCase();
+    const m = body.match(/Booking\s*reference\s*[:#]?\s*([A-Z0-9]{6})\b/i);
+    if (m && looksLikePnr(m[1].toUpperCase())) {
+      log('   PNR found in page body (Booking reference label)');
+      return m[1].toUpperCase();
+    }
+    // Also accept a "PNR" label variant.
+    const mp = body.match(/\bPNR\s*[:#]?\s*([A-Z0-9]{6})\b/i);
+    if (mp && looksLikePnr(mp[1].toUpperCase())) {
+      log('   PNR found in page body (PNR label)');
+      return mp[1].toUpperCase();
+    }
   } catch { /* continue */ }
 
-  // Strategy 2: sibling/parent of the "Booking reference" label element
+  // Strategy 2: DOM — read the value near the "Booking reference" label element.
+  // Walk a couple of ancestors so we catch the value whether it's a sibling or
+  // nested in a neighbouring node.
   try {
-    const label = page.getByText(/^Booking reference$/i).first();
-    const parent = label.locator('xpath=../..').first();
-    const text = await parent.innerText({ timeout: 1000 });
-    const m = text.match(/\b([A-Z0-9]{6})\b/);
-    if (m) return m[1];
+    const label = page.getByText(/booking\s*reference/i).first();
+    for (const xp of ['xpath=..', 'xpath=../..', 'xpath=../../..']) {
+      const text = await label.locator(xp).first().innerText({ timeout: 800 }).catch(() => '');
+      const m = text.match(PNR_RE);
+      if (m && looksLikePnr(m[0].toUpperCase())) {
+        log('   PNR found via Booking reference label DOM');
+        return m[0].toUpperCase();
+      }
+    }
   } catch { /* continue */ }
 
   // Strategy 3: URL params
   const urlMatch = page.url().match(/[?&/](?:pnr|ref|booking)[=:/]?([A-Z0-9]{6})/i);
-  if (urlMatch) {
+  if (urlMatch && looksLikePnr(urlMatch[1].toUpperCase())) {
     log('   PNR found in URL');
     return urlMatch[1].toUpperCase();
+  }
+
+  // Strategy 4: fall back to the PNR we typed into the Manage form. The booking
+  // that loaded on this tab IS that PNR, so this is reliable when scraping fails.
+  if (knownPnr && looksLikePnr(knownPnr.toUpperCase())) {
+    log('   PNR not scraped — using the booking reference entered into the form');
+    return knownPnr.toUpperCase();
   }
 
   log('   ⚠️  PNR not found');
@@ -549,6 +660,193 @@ async function extractFlights(page: Page, log: LogFn): Promise<FlightLeg[]> {
   return legs;
 }
 
+// ── From/To fallback via "Flight details" modal ───────────────────────────────
+
+/**
+ * Per-leg fallback for when a leg's from/to airport codes aren't visible on the
+ * main booking page. For each leg still missing from OR to, this:
+ *   1. Finds the leg's "Flight details" trigger (one per leg, in order).
+ *   2. Clicks it to open the modal.
+ *   3. Reads every airport code in the modal — they render as a bulleted
+ *      "HH:MM , XXX" (time, comma, 3-letter code), e.g. "16:15  , LHR".
+ *   4. Uses the FIRST code as origin (from) and the LAST as destination (to).
+ *   5. Closes the modal via its X button.
+ *
+ * Runs independently per leg: a leg that already has both from and to is skipped.
+ */
+async function fillMissingFromToFromModal(
+  page:    Page,
+  flights: FlightLeg[],
+  log:     LogFn
+): Promise<void> {
+  if (!flights.some(f => !f.from || !f.to)) return;   // nothing missing
+
+  log('   🔎 Some legs missing from/to — running "Flight details" modal fallback');
+
+  for (let i = 0; i < flights.length; i++) {
+    const leg = flights[i];
+    if (leg.from && leg.to) continue;   // this leg is already complete — skip
+
+    log(`   ↳ Leg ${i + 1} missing from/to (from="${leg.from}" to="${leg.to}") — opening Flight details`);
+
+    try {
+      // Make sure nothing from a previous leg is still blocking the page
+      await closeAnyOpenModal(page, log);
+
+      // The i-th "Flight details" trigger corresponds to leg i (first = leg 1).
+      const triggers = await findFlightDetailsTriggers(page);
+      if (triggers.length === 0) {
+        log('   ⚠️  No "Flight details" trigger found — cannot run fallback');
+        return;
+      }
+      const trigger = triggers[i] ?? triggers[triggers.length - 1];
+
+      await trigger.scrollIntoViewIfNeeded({ timeout: 1000 }).catch(() => {});
+      await trigger.click({ timeout: 2000 });
+      log(`   ▼ Clicked "Flight details" #${i + 1}`);
+      await delay(400);
+
+      const codes = await readModalAirportCodes(page, log);
+      if (codes.length >= 2) {
+        if (!leg.from) leg.from = codes[0];
+        if (!leg.to)   leg.to   = codes[codes.length - 1];
+        log(`   ✓ Leg ${i + 1} from modal: ${leg.from} → ${leg.to} (codes: ${codes.join(', ')})`);
+      } else if (codes.length === 1) {
+        if (!leg.from) leg.from = codes[0];
+        log(`   ⚠️  Only 1 airport code in modal for leg ${i + 1}: ${codes[0]}`);
+      } else {
+        log(`   ⚠️  No airport codes found in Flight details modal for leg ${i + 1}`);
+      }
+
+      // Close the modal via its X button (top right)
+      await closeFlightDetailsModal(page, log);
+      await delay(200);
+    } catch (err) {
+      log(`   ⚠️  Flight details fallback for leg ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`);
+      await closeAnyOpenModal(page, log);
+    }
+  }
+}
+
+/**
+ * Finds the clickable "Flight details" triggers (one per leg, in page order).
+ * Tries role-based selectors first, then text-based fallbacks.
+ */
+async function findFlightDetailsTriggers(page: Page): Promise<Locator[]> {
+  const strategies: Array<() => Promise<Locator[]>> = [
+    () => page.getByRole('button', { name: /flight details/i }).all(),
+    () => page.getByRole('link',   { name: /flight details/i }).all(),
+    () => page.locator('button:has-text("Flight details"), a:has-text("Flight details")').all(),
+    () => page.getByText(/flight details/i).all(),
+  ];
+  for (const make of strategies) {
+    try {
+      const els = await make();
+      if (els.length > 0) return els;
+    } catch { /* try next */ }
+  }
+  return [];
+}
+
+/**
+ * Reads all airport codes from the currently open "Flight details" modal.
+ *
+ * Each stop renders as a bullet "HH:MM , XXX" (time, comma, 3-letter code),
+ * e.g. "16:15  , LHR".  For a multi-stop leg the modal lists every segment:
+ *   LHR (origin) → RUH (layover in) → RUH (layover out) → BKK (destination).
+ * So codes[0] is the origin and the LAST code is the true destination — the
+ * intermediate layover codes are simply skipped by the caller.
+ *
+ * IMPORTANT: the modal is scrollable and only the first segment is painted
+ * when it opens (the destination row sits below the fold). Reading too early
+ * yields just the origin + first layover, which is why the destination came
+ * out as the layover (RUH) instead of the final stop (BKK). So we scroll the
+ * modal to the bottom to force every segment to render, then poll until the
+ * code count stops growing before returning.
+ */
+async function readModalAirportCodes(page: Page, log: LogFn): Promise<string[]> {
+  const dlg = page.locator('[role="dialog"]:visible').last();
+  try { await dlg.waitFor({ state: 'visible', timeout: 3000 }); } catch { /* read body fallback */ }
+
+  // Pull every "..., XXX" code out of the modal text, in document order.
+  const collect = async (): Promise<string[]> => {
+    let text = '';
+    try { text = await dlg.innerText({ timeout: 1500 }); }
+    catch { text = await page.locator('body').innerText().catch(() => ''); }
+
+    const codes: string[] = [];
+    // Every airport row is "... , XXX" (comma then 3-letter code) — this holds
+    // for BOTH departure rows ("21:55 , GIZ", time before code) and arrival
+    // rows (", RUH" then "23:50", code before its time). So matching on the
+    // comma+code captures every stop INCLUDING layovers. Stray UI labels like
+    // "VIP" are dropped by the NOT_AIRPORT blocklist rather than by the regex.
+    const re = /,\s*([A-Z]{3})\b/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (!NOT_AIRPORT.has(m[1])) codes.push(m[1]);
+    }
+    return codes;
+  };
+
+  // Scroll the modal (and any scrollable child) to the bottom to render lazy
+  // content, then poll: keep the longest list seen, stop once it's stable.
+  let best: string[] = [];
+  let stable = 0;
+  for (let pass = 0; pass < 8; pass++) {
+    try {
+      await dlg.evaluate((el: HTMLElement) => {
+        // Saudia's modal scrolls inside <mat-dialog-content> (scrollH≈992,
+        // clientH≈493) — scroll that first, then any other scrollable child.
+        const main = el.querySelector<HTMLElement>('.mat-dialog-content, mat-dialog-content');
+        if (main) main.scrollTop = main.scrollHeight;
+        el.scrollTop = el.scrollHeight;
+        el.querySelectorAll<HTMLElement>('*').forEach(c => {
+          if (c.scrollHeight > c.clientHeight + 4) c.scrollTop = c.scrollHeight;
+        });
+      });
+    } catch { /* non-fatal */ }
+    await delay(250);
+
+    const codes = await collect();
+    if (codes.length > best.length) { best = codes; stable = 0; }
+    else { stable++; }
+    if (best.length >= 2 && stable >= 2) break;   // count settled — done
+  }
+
+  log(`   Modal airport codes (${best.length}): ${best.length ? best.join(', ') : '(none)'}`);
+  return best;
+}
+
+/**
+ * Closes the "Flight details" modal via its X button.
+ *
+ * On Saudia this X is NOT a <button> — it's
+ *   <div class="custom-overlay-close custom-overlay-close--visible">
+ *     <span class="material-icons icon-close-outlined close_icon">close</span>
+ *   </div>
+ * with no aria-label, so the generic button/role-based closers miss it. We
+ * target the real class first, then fall back to the shared closer + Escape.
+ */
+async function closeFlightDetailsModal(page: Page, log: LogFn): Promise<void> {
+  const strategies: Array<() => Promise<void>> = [
+    () => page.locator('.custom-overlay-close--visible').last().click({ timeout: 500 }),
+    () => page.locator('.custom-overlay-close').last().click({ timeout: 500 }),
+    () => page.locator('span.close_icon, span.icon-close-outlined').last().click({ timeout: 500 }),
+    () => page.keyboard.press('Escape'),
+  ];
+  for (const fn of strategies) {
+    try {
+      await fn();
+      await delay(150);
+      const stillOpen = await page.locator('[role="dialog"]:visible').last()
+        .isVisible({ timeout: 300 }).catch(() => false);
+      if (!stillOpen) { log('   ✓ Flight details modal closed'); return; }
+    } catch { /* try next */ }
+  }
+  // Last resort: the shared closer (covers other modal variants)
+  await closeTopModal(page, log);
+}
+
 // ── Passenger extraction ──────────────────────────────────────────────────────
 
 /**
@@ -602,8 +900,11 @@ async function getPassengerNamesFromBody(page: Page, log: LogFn): Promise<string
     };
 
     // Pass 1: names WITH title — "Ms. Manal Alhazani · Adult" / "Mstr. Yaseen · Child"
+    // The (?<![A-Za-z]) guard requires a non-letter (start/space/newline) before
+    // the title so a title that is merely the TAIL of a longer word does not
+    // match — e.g. "Hindabdulazizms Abdulkarim" must not yield "ms Abdulkarim".
     const re1 = new RegExp(
-      `((?:${TITLE_PATTERN})\\.?\\s+[\\w][\\w\\s\\-']+?)\\s*[·.\\u00B7]\\s*(?:Adult(?:\\s+with\\s+Infant)?|Child|Infant)`,
+      `(?<![A-Za-z])((?:${TITLE_PATTERN})\\.?\\s+[\\w][\\w\\s\\-']+?)\\s*[·.\\u00B7]\\s*(?:Adult(?:\\s+with\\s+Infant)?|Child|Infant)`,
       'gi'
     );
     let m: RegExpExecArray | null;
@@ -615,8 +916,24 @@ async function getPassengerNamesFromBody(page: Page, log: LogFn): Promise<string
     const re2 = /^([A-Z][a-zA-Z]+(?:\s+[A-Za-z][a-zA-Z\-']+)+)\s*[·.\u00B7]\s*(?:Adult(?:\s+with\s+Infant)?|Child|Infant)/gmi;
     while ((m = re2.exec(body)) !== null) addName(m[1]);
 
-    log(`   Name scan: ${names.length} found → ${names.map(n => `"${n}"`).join(', ')}`);
-    return names;
+    // Dedup safety net: drop any name that is the trailing fragment of a longer
+    // detected name (the same title-inside-a-word problem surviving via another
+    // path). Normalise to lowercase + single spaces before comparing.
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const deduped = names.filter((a) =>
+      !names.some((b) => {
+        if (a === b) return false;
+        const na = norm(a), nb = norm(b);
+        return nb.length > na.length && nb.endsWith(na);
+      })
+    );
+    if (deduped.length !== names.length) {
+      const removed = names.filter(n => !deduped.includes(n));
+      log(`   Name scan: dropped ${removed.length} duplicate fragment(s) → ${removed.map(n => `"${n}"`).join(', ')}`);
+    }
+
+    log(`   Name scan: ${deduped.length} found → ${deduped.map(n => `"${n}"`).join(', ')}`);
+    return deduped;
   } catch {
     return [];
   }
@@ -630,6 +947,12 @@ async function extractAllPassengers(
   pauseCheck: PauseCheckFn = NO_PAUSE
 ): Promise<PassengerData[]> {
   const results: PassengerData[] = [];
+
+  // The PNR may be blank if it couldn't be scraped from the page header. The
+  // e-ticket modal of ANY passenger also shows the booking reference, and every
+  // passenger on this tab shares the same booking — so the first one we read
+  // backfills the rest. `effectivePnr` is updated the moment we find it.
+  let effectivePnr = pnr;
 
   // ── Count passengers ──────────────────────────────────────────────────────────
   // Primary: body-text name scan (reliable, unaffected by DOM state)
@@ -697,6 +1020,13 @@ async function extractAllPassengers(
       // (flights, "View E-ticket & receipts").  Card-scoped click = no index drift.
       await clickExpandButton(card, page, i, log);
 
+      // Verify the card actually expanded by confirming the e-ticket section is
+      // now visible. The ▼ chevron click can silently fail on cards whose header
+      // has no inline "· Edit" (passport already complete), leaving passport AND
+      // ticket unreadable. ensureCardExpanded recovers by clicking the name /
+      // "· Adult" / chevron — any of which toggles the card open.
+      await ensureCardExpanded(page, card, name, i, log);
+
       // ── STEP C: Extract all data ────────────────────────────────────────────
       let fullName      = await extractFullName(card, log);
 
@@ -715,13 +1045,21 @@ async function extractAllPassengers(
 
       const ffNumber      = await extractFFNumber(card, log);
       const { lastName, passportNumber } = await extractPersonalDetails(card, page, fullName || name, log);
-      const { ticketNumber, travelClass } = await extractEticket(page, card, i, fullName || name, log);
+      const { ticketNumber, travelClass, bookingRef } = await extractEticket(page, card, i, fullName || name, log);
+
+      // Failsafe: if the page PNR was blank, adopt the one shown in this
+      // passenger's e-ticket and backfill any passengers already recorded.
+      if (!effectivePnr && bookingRef) {
+        effectivePnr = bookingRef;
+        log(`   🔑 PNR recovered from e-ticket: ${bookingRef} — applying to all passengers on this booking`);
+        for (const r of results) if (!r.pnr) r.pnr = bookingRef;
+      }
 
       const resolvedLastName = lastName || parseLastName(fullName || name);
       const status: PassengerData['status'] = passportNumber ? 'done' : 'no-passport';
 
       results.push({
-        pnr,
+        pnr: effectivePnr,
         fullName:       fullName || name,
         lastName:       resolvedLastName,
         flights,
@@ -840,6 +1178,9 @@ async function clickExpandButton(
   index: number,
   log:   LogFn
 ): Promise<void> {
+  // Bring the card into view first — an off-screen chevron can fail to click.
+  await card.scrollIntoViewIfNeeded({ timeout: 800 }).catch(() => {});
+
   const strategies: Array<() => Promise<void>> = [
     // ── Card-scoped (most reliable — unaffected by other cards' state) ──────
     () => card.locator('button[aria-expanded="false"]').first().click({ timeout: 400 }),
@@ -847,6 +1188,11 @@ async function clickExpandButton(
     () => card.locator('button:has-text("expand_more")').first().click({ timeout: 400 }),
     () => card.locator('button:has-text("keyboard_arrow_down")').first().click({ timeout: 400 }),
     () => card.locator('button').last().click({ timeout: 400 }),
+    // ── JS-dispatched click (works when an overlay intercepts a real click) ──
+    async () => {
+      const btn = card.locator('button[aria-expanded], button:has-text("expand_more"), button:has-text("keyboard_arrow_down")').first();
+      await btn.evaluate((el: HTMLElement) => el.click());
+    },
     // ── Page-level by index (fallback only) ──────────────────────────────────
     async () => {
       const btns = await page.locator('button[aria-expanded]').all();
@@ -875,6 +1221,73 @@ async function clickExpandButton(
   }
 
   log('   ⚠️  Could not click expand button — card may already be open or button not found');
+}
+
+/**
+ * Guarantees a passenger's card is expanded so the deeper section ("View
+ * E-ticket & receipts", Personal details Edit/Update) is visible. Success is
+ * confirmed by the e-ticket link actually appearing — not merely "a click did
+ * not throw" — because the ▼ chevron click silently fails on some cards.
+ *
+ * If still collapsed it toggles the accordion using the targets the user
+ * confirmed all reopen the card: the circular ▼ chevron, the passenger NAME, and
+ * the "· Adult/Child/Infant" label. Clicking the name twice handles the case
+ * where the first click happened to toggle an already-open card shut.
+ */
+async function ensureCardExpanded(
+  page:  Page,
+  card:  Locator,
+  name:  string,
+  index: number,
+  log:   LogFn
+): Promise<boolean> {
+  // Single-open accordion → there is at most one visible e-ticket link on the page.
+  const linkVisibleNow = async (): Promise<boolean> => {
+    const links = await page.getByText('View E-ticket & receipts').all().catch(() => []);
+    for (const l of links) {
+      if (await l.isVisible({ timeout: 200 }).catch(() => false)) return true;
+    }
+    return false;
+  };
+  // Poll for up to `ms` — the section renders asynchronously after the expand
+  // click, so an instant check gives false negatives and triggers needless
+  // re-clicks that can toggle an already-open card shut.
+  const isExpanded = async (ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    do {
+      if (await linkVisibleNow()) return true;
+      await delay(150);
+    } while (Date.now() < deadline);
+    return false;
+  };
+
+  // Generous initial wait: covers the render after the preceding clickExpandButton.
+  if (await isExpanded(1200)) return true;
+
+  await card.scrollIntoViewIfNeeded({ timeout: 800 }).catch(() => {});
+
+  const clickChevron = async () =>
+    card.locator('button[aria-expanded], button:has-text("expand_more"), button:has-text("keyboard_arrow_down")')
+        .first().click({ timeout: 800 });
+  const clickName = async () => {
+    if (!name) throw new Error('no name');
+    await page.getByText(name, { exact: false }).first().click({ timeout: 1000 });
+  };
+  const clickAdult = async () =>
+    card.getByText(/\b(Adult|Child|Infant)\b/i).first().click({ timeout: 800 });
+
+  // Order: chevron (precise) → name → "Adult" → name again (toggle recovery).
+  const targets: Array<() => Promise<unknown>> = [clickChevron, clickName, clickAdult, clickName];
+  for (const target of targets) {
+    try { await target(); } catch { continue; }
+    if (await isExpanded(500)) {
+      log('   ▼ Card expanded — e-ticket section revealed');
+      return true;
+    }
+  }
+
+  log('   ⚠️  Could not reveal e-ticket section after name / Adult / chevron clicks');
+  return false;
 }
 
 // ── Card root locators ────────────────────────────────────────────────────────
@@ -1020,6 +1433,24 @@ async function extractPersonalDetails(
     // matching :has-text() and accidentally returning pax1's Edit button.
     let editBtn: Locator | null = null;
 
+    // ── Strategy 0: precise aria-label (confirmed live via debug/probe-final.js) ──
+    // The Personal-details Edit button has aria-label "click to edit <Name>".
+    // The Alfursan / Frequent-flyer Edit — which opens a Login modal and must NOT
+    // be clicked — has aria-label "edit Alfursan details" and class .edit-ffp.
+    //
+    // NOTE: getByRole({ name: /click to edit/ }) does NOT match here — Playwright
+    // computes this button's accessible name from its visible text ("Edit"), not
+    // the aria-label, so the role-name match returns 0. The plain CSS attribute
+    // selector (no case-insensitive `i` flag, which Playwright rejects) matches
+    // exactly the one correct button. :not(.edit-ffp) is belt-and-suspenders.
+    try {
+      const candidate = card.locator('button[aria-label*="click to edit"]:not(.edit-ffp)').first();
+      if (await candidate.isVisible({ timeout: 600 }).catch(() => false)) {
+        editBtn = candidate;
+        log('   Personal Details Edit found (aria-label "click to edit")');
+      }
+    } catch { /* fall through to the text-based strategies below */ }
+
     // ── Strategy 1: Walk ancestor depths from "Personal details" text ─────────
     // Tries depths 1-4 above the text node. At each level checks:
     //   (a) "Personal details" appears in the row text
@@ -1047,8 +1478,12 @@ async function extractPersonalDetails(
     // nearest ancestor div exclusively contains "Personal details" context.
     if (!editBtn) {
       try {
-        const allEdits = await card.getByText('Edit', { exact: true }).all();
+        // Exclude the Alfursan/FF Edit (class .edit-ffp) so the scan can never
+        // pick the button that opens the Login modal.
+        const allEdits = (await card.getByText('Edit', { exact: true }).all());
         outer: for (const btn of allEdits) {
+          if (await btn.locator('xpath=ancestor-or-self::button[contains(@class,"edit-ffp")]')
+                       .count().catch(() => 0)) continue;
           for (const depth of [2, 3, 4, 5]) {
             try {
               const anc     = btn.locator(`xpath=ancestor::div[${depth}]`).first();
@@ -1421,9 +1856,10 @@ async function extractEticket(
   passengerIndex: number,
   passengerName:  string,
   log:            LogFn
-): Promise<{ ticketNumber: string; travelClass: string }> {
+): Promise<{ ticketNumber: string; travelClass: string; bookingRef: string }> {
   let ticketNumber = '';
   let travelClass  = '';
+  let bookingRef   = '';   // PNR read from the e-ticket modal (shared across passengers)
 
   try {
     // Find "View E-ticket & receipts" — card-scoped first, page-level index fallback
@@ -1452,16 +1888,34 @@ async function extractEticket(
       }
     }
 
+    // Recovery: the link is missing only because the card never expanded (the ▼
+    // click can fail on some cards). Re-expand this passenger's card by clicking
+    // the name / "· Adult" / chevron, then retry before giving up — this is what
+    // was skipping otherwise-good tickets.
+    if (!eticketLink) {
+      log('   ↻ E-ticket link not visible — re-expanding card and retrying');
+      await ensureCardExpanded(page, card, passengerName, passengerIndex, log);
+      await delay(200);
+      const retryLinks = await page.getByText('View E-ticket & receipts').all();
+      for (const link of retryLinks) {
+        if (await link.isVisible({ timeout: 500 }).catch(() => false)) {
+          eticketLink = link;
+          log('   ✓ E-ticket link appeared after re-expanding');
+          break;
+        }
+      }
+    }
+
     if (!eticketLink) {
       log(`   Reason: "View E-ticket & receipts" link not found for passenger ${passengerIndex + 1} — ticket skipped`);
-      return { ticketNumber, travelClass };
+      return { ticketNumber, travelClass, bookingRef };
     }
 
     // Guard: only click if visible — avoids 30 s timeout when card not expanded
     const linkVisible = await eticketLink.isVisible({ timeout: 500 }).catch(() => false);
     if (!linkVisible) {
       log('   Reason: "View E-ticket & receipts" not visible — card not expanded, ticket skipped');
-      return { ticketNumber, travelClass };
+      return { ticketNumber, travelClass, bookingRef };
     }
 
     await eticketLink.click();
@@ -1472,7 +1926,7 @@ async function extractEticket(
     if (page.url().includes('socialLogin') || page.url().includes('login')) {
       log('   Reason: E-ticket click navigated to login page (URL navigated away) — ticket skipped');
       await closeAnyOpenModal(page, log);
-      return { ticketNumber, travelClass };
+      return { ticketNumber, travelClass, bookingRef };
     }
 
     // ── Failsafe: if a login-like dialog appeared ────────────────────────
@@ -1500,7 +1954,7 @@ async function extractEticket(
             if (!stillOpen) { log('   ✓ Login modal closed'); break; }
           } catch { /* try next */ }
         }
-        return { ticketNumber, travelClass };
+        return { ticketNumber, travelClass, bookingRef };
       }
     } catch { /* not a login modal — continue */ }
 
@@ -1525,7 +1979,7 @@ async function extractEticket(
     if (!viewEticketBtn) {
       log('   Reason: "View E-ticket" button not found in outer modal — ticket skipped');
       await closeTopModal(page, log);
-      return { ticketNumber, travelClass };
+      return { ticketNumber, travelClass, bookingRef };
     }
 
     await viewEticketBtn.click();
@@ -1582,6 +2036,9 @@ async function extractEticket(
           // Fare class: "Fare class  J"
           const cMatch = accordionText.match(/Fare\s+class\s+([A-Z])\b/i);
           if (cMatch && !allClasses.includes(cMatch[1])) allClasses.push(cMatch[1]);
+
+          // Booking reference (PNR) — same for every passenger on this booking
+          if (!bookingRef) bookingRef = parseBookingRef(accordionText);
 
           log(`   E-ticket ${ai + 1}: ticket=${tMatch?.[1] ?? 'n/a'} | class=${cMatch?.[1] ?? 'n/a'}`);
 
@@ -1657,7 +2114,10 @@ async function extractEticket(
       const classMatch = modalText.match(/Fare\s+class\s+([A-Z])\b/i);
       if (classMatch) travelClass = classMatch[1];
 
-      log(`   Ticket: ${ticketNumber || 'n/a'} | Fare class: ${travelClass || 'n/a'}`);
+      // Booking reference (PNR) — same for every passenger on this booking
+      if (!bookingRef) bookingRef = parseBookingRef(modalText);
+
+      log(`   Ticket: ${ticketNumber || 'n/a'} | Fare class: ${travelClass || 'n/a'}${bookingRef ? ` | Booking ref: ${bookingRef}` : ''}`);
 
       // ── Verify ticket belongs to this passenger ─────────────────────────
       if (ticketNumber && passengerName) {
@@ -1709,7 +2169,14 @@ async function extractEticket(
     }
   } catch { /* ignore */ }
 
-  return { ticketNumber, travelClass };
+  return { ticketNumber, travelClass, bookingRef };
+}
+
+/** Pulls a "Booking reference" value (PNR) out of e-ticket modal/dialog text */
+function parseBookingRef(text: string): string {
+  const m = text.match(/Booking\s*reference\s*[:#]?\s*([A-Z0-9]{6})\b/i);
+  if (m && looksLikePnr(m[1].toUpperCase())) return m[1].toUpperCase();
+  return '';
 }
 
 // ── Modal closer ──────────────────────────────────────────────────────────────
