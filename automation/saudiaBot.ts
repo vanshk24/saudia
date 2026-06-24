@@ -185,10 +185,14 @@ export function isSaudiaHomepage(url: string): boolean {
   const lower = url.toLowerCase();
   if (!lower.includes('saudia.com')) return false;
   if (isSaudiaTab(url)) return false;          // already on a booking/manage page
-  // Root or top-level marketing paths (e.g. saudia.com/, /en, /en-sa, /home)
-  const path = lower.replace(/^https?:\/\/[^/]+/, '');   // strip scheme + host
+  // Root or a top-level locale / marketing path. Saudia uses language-COUNTRY
+  // locale segments such as /en-in, /en-sa, /ar-sa as well as bare /en, /home.
+  const path = lower
+    .replace(/^https?:\/\/[^/]+/, '')   // strip scheme + host
+    .replace(/[?#].*$/, '');            // strip query / hash
   return path === '' || path === '/' ||
-    /^\/(en|ar|home|index)?(\/(en|ar|home|index))?\/?($|[?#])/.test(path);
+    /^\/[a-z]{2}(-[a-z]{2})?\/?$/.test(path) ||   // /en, /en-in, /ar-sa
+    /^\/(home|index)\/?$/.test(path);
 }
 
 /** Convenience overload that accepts a Page object */
@@ -913,7 +917,10 @@ async function getPassengerNamesFromBody(page: Page, log: LogFn): Promise<string
     // Pass 2: names WITHOUT title — "Muhammad Nabhan · Adult"
     // Only match lines that start with a capital letter followed by at least
     // one more word, ending at the · Adult/Child/Infant marker.
-    const re2 = /^([A-Z][a-zA-Z]+(?:\s+[A-Za-z][a-zA-Z\-']+)+)\s*[·.\u00B7]\s*(?:Adult(?:\s+with\s+Infant)?|Child|Infant)/gmi;
+    // The tail word token uses * (not +) so a single-letter middle initial counts
+    // as a word — "Sultan Abdullah A Alkhawlani · Child" otherwise fails on the lone
+    // "A" and the whole untitled child passenger gets dropped from the count.
+    const re2 = /^([A-Z][a-zA-Z]+(?:\s+[A-Za-z][a-zA-Z\-']*)+)\s*[·.\u00B7]\s*(?:Adult(?:\s+with\s+Infant)?|Child|Infant)/gmi;
     while ((m = re2.exec(body)) !== null) addName(m[1]);
 
     // Dedup safety net: drop any name that is the trailing fragment of a longer
@@ -1527,25 +1534,25 @@ async function extractPersonalDetails(
     // dialog) close it immediately and click again.  The second open is reliable.
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const ctx = await editBtn.locator('xpath=../..').innerText({ timeout: 600 }).catch(() => '');
+        const ctx = await editBtn.locator('xpath=../..').innerText({ timeout: 300 }).catch(() => '');
         log(`   Edit btn context (attempt ${attempt}): "${ctx.slice(0, 100).replace(/\n+/g, ' ')}"`);
       } catch { /* non-fatal */ }
 
       await page.evaluate(() => {
         document.querySelectorAll('.cdk-overlay-backdrop').forEach(el => el.remove());
       });
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(100);
 
       await editBtn.click();
       log(`   Clicked Edit (attempt ${attempt})`);
-      await delay(250);
+      await delay(120);
 
       // Check if the wrong dialog opened
       try {
         const dlgCount = await page.locator('[role="dialog"]').count();
         if (dlgCount > 0) {
           const topText = await page.locator('[role="dialog"]').last()
-            .innerText({ timeout: 1000 }).catch(() => '');
+            .innerText({ timeout: 400 }).catch(() => '');
           const isWrong =
             /log\s*in|sign\s*in|email.*password|continue\s+with\s+google|alfursan\s+account/i.test(topText) &&
             !/edit passenger details/i.test(topText);
@@ -1574,7 +1581,7 @@ async function extractPersonalDetails(
       const count = await page.locator('[role="dialog"]').count();
       if (count > 0) { dialogFound = true; break; }
       log(`   Waiting for dialog to appear (attempt ${attempt + 1})...`);
-      await delay(400);
+      await delay(200);
     }
     if (!dialogFound) {
       log('   Reason: Personal details modal never opened after Edit click — passport skipped');
@@ -1587,7 +1594,7 @@ async function extractPersonalDetails(
     try {
       // Use the visible dialog only — closed modals linger in React DOM
       const modal = page.locator('[role="dialog"]:visible').last();
-      const modalText = await modal.innerText({ timeout: 800 }).catch(() => '');
+      const modalText = await modal.innerText({ timeout: 400 }).catch(() => '');
       log(`   Modal text (first 200): "${modalText.slice(0, 200).replace(/\n+/g, ' ')}"`);
 
       const isWrongModal =
@@ -1634,7 +1641,7 @@ async function extractPersonalDetails(
       const outerHtml = await allDialogs[di].evaluate(
         (el: Element) => el.outerHTML.slice(0, 300)
       ).catch(() => '(no html)');
-      const snippet = await allDialogs[di].innerText({ timeout: 400 }).catch(() => '');
+      const snippet = await allDialogs[di].innerText({ timeout: 250 }).catch(() => '');
       const hasEditPD = /edit passenger details/i.test(snippet);
       const inputVal = await allDialogs[di].locator('input').nth(1).inputValue().catch(() => '(none)');
       log(`   Dialog[${di}]: visible=${vis} | editPD=${hasEditPD} | input[1]="${inputVal}"`);

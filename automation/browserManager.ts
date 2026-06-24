@@ -187,11 +187,14 @@ export async function getSaudiaPages(): Promise<SaudiaPage[]> {
 
   // Sort by the index of each page's target ID in the live /json/list order
   // (unique IDs preserve visual order even when URLs are identical).
-  result.sort((a, b) => {
-    const aIdx = liveOrder.indexOf(pageTargetId.get(a.page) ?? '');
-    const bIdx = liveOrder.indexOf(pageTargetId.get(b.page) ?? '');
-    return aIdx - bIdx;
-  });
+  // A target ID missing from liveOrder must sort to the END, not the front:
+  // indexOf returns -1, and -1 < every real index, so untreated it would yank
+  // those tabs to position 0 and scramble the visual sequence. Map -1 → Infinity.
+  const orderIndex = (p: SaudiaPage): number => {
+    const idx = liveOrder.indexOf(pageTargetId.get(p.page) ?? '');
+    return idx === -1 ? Number.POSITIVE_INFINITY : idx;
+  };
+  result.sort((a, b) => orderIndex(a) - orderIndex(b));
 
   console.log('=== RESULT AFTER SORT ===');
   result.forEach((p, i) => console.log(`sorted[${i}]: id=${pageTargetId.get(p.page) ?? 'unknown'} url=${p.url}`));
