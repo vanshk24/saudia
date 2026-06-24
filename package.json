@@ -9,7 +9,9 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:renderer && npm run build:electron",
     "start": "npm run build && electron .",
-    "pack": "npm run build && electron-builder --win --config electron-builder.config.js"
+    "pack": "npm run build && electron-builder --win --config electron-builder.config.js",
+    "pack:extract": "cross-env EXTRACTION_ONLY=1 npm run _pack",
+    "_pack": "npm run build && electron-builder --win --config electron-builder.config.js"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
@@ -23,10 +25,12 @@
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "concurrently": "^8.2.0",
+    "cross-env": "^10.1.0",
     "css-loader": "^6.8.0",
     "electron": "^28.1.0",
     "electron-builder": "^24.9.0",
     "html-webpack-plugin": "^5.5.0",
+    "png-to-ico": "^3.0.1",
     "style-loader": "^3.3.0",
     "ts-loader": "^9.5.0",
     "typescript": "^5.3.0",

@@ -1,4 +1,5 @@
 const path = require('path');
+const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
 module.exports = {
@@ -27,6 +28,11 @@ module.exports = {
     ],
   },
   plugins: [
+    // Build-time flag: EXTRACTION_ONLY=1 produces the extraction-only variant
+    // (hides the Booking List / auto-entry picker). Default '' = full app.
+    new webpack.DefinePlugin({
+      'process.env.EXTRACTION_ONLY': JSON.stringify(process.env.EXTRACTION_ONLY || ''),
+    }),
     new HtmlWebpackPlugin({
       template: './renderer/index.html',
       filename: 'index.html',

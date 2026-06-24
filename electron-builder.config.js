@@ -1,6 +1,11 @@
+// EXTRACTION_ONLY=1 builds the extraction-only variant: a distinct product name
+// and appId so it installs side-by-side with the full app on the same PC.
+const EXTRACTION_ONLY = process.env.EXTRACTION_ONLY === '1';
+const PRODUCT_NAME = EXTRACTION_ONLY ? 'Saudia Automation (Extraction Only)' : 'Saudia Automation';
+
 module.exports = {
-  appId: 'com.saudia.automation',
-  productName: 'Saudia Automation',
+  appId: EXTRACTION_ONLY ? 'com.saudia.automation.extract' : 'com.saudia.automation',
+  productName: PRODUCT_NAME,
   copyright: 'Copyright © 2025',
 
   directories: {
@@ -41,18 +46,17 @@ module.exports = {
         arch: ['x64'],
       },
     ],
-    // icon is optional — remove this line if assets/icon.png doesn't exist
-    // icon: 'assets/icon.png',
+    icon: 'assets/icon.ico',
   },
 
   nsis: {
     oneClick: false,
     allowToChangeInstallationDirectory: true,
-    installerIcon: null,
-    uninstallerIcon: null,
+    installerIcon: 'assets/icon.ico',
+    uninstallerIcon: 'assets/icon.ico',
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
-    shortcutName: 'Saudia Automation',
+    shortcutName: PRODUCT_NAME,
   },
 
   extraMetadata: {

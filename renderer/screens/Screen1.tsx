@@ -1,6 +1,11 @@
 import React from 'react';
 import { AppState } from '../App';
 
+// Build-time flag injected by webpack DefinePlugin. When '1', this is the
+// extraction-only variant: the Booking List (auto-entry) picker is hidden so
+// the app only reads already-open tabs. Auto-entry code is left fully intact.
+const EXTRACTION_ONLY = process.env.EXTRACTION_ONLY === '1';
+
 type Props = {
   appState: AppState;
   setAppState: React.Dispatch<React.SetStateAction<AppState>>;
@@ -95,6 +100,8 @@ const Screen1: React.FC<Props> = ({ appState, setAppState, onNext }) => {
           </button>
         </div>
 
+        {!EXTRACTION_ONLY && (
+        <>
         <div className="divider" />
 
         {/* Booking list row (PNR + surname input) */}
@@ -125,6 +132,8 @@ const Screen1: React.FC<Props> = ({ appState, setAppState, onNext }) => {
             Select .xlsx / .csv
           </button>
         </div>
+        </>
+        )}
 
         <div className="divider" />
 
